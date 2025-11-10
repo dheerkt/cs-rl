@@ -15,33 +15,11 @@ import torch
 import argparse
 from collections import Counter
 
-# Add src to path
-sys.path.insert(0, os.path.dirname(__file__))
-
-from overcooked_ai_py.mdp.overcooked_mdp import OvercookedGridworld
-from overcooked_ai_py.mdp.overcooked_env import OvercookedEnv
-
-from models import ActorNetwork, CentralizedCritic
-from ppo import PPO
-from reward_shaping import RewardShaper
+from .env_builder import build_overcooked_env
+from .models import ActorNetwork, CentralizedCritic
+from .ppo import PPO
+from .reward_shaping import RewardShaper
 from configs.hyperparameters import HyperParams
-
-
-def build_env(layout, seed=42):
-    """Build seeded environment"""
-    mdp = OvercookedGridworld.from_layout_name(layout)
-    env = OvercookedEnv.from_mdp(mdp, horizon=400)
-
-    # Seed environment
-    try:
-        if hasattr(env, 'seed'):
-            env.seed(seed)
-        if hasattr(env, 'mdp') and hasattr(env.mdp, 'seed'):
-            env.mdp.seed(seed)
-    except Exception:
-        pass
-
-    return env
 
 
 def test_agent_swap_caching(num_episodes=10):
@@ -53,9 +31,9 @@ def test_agent_swap_caching(num_episodes=10):
     print("TEST 1: Agent-Index Swap Caching")
     print("="*60)
 
-    env = build_env('cramped_room', seed=42)
+    env = build_overcooked_env('cramped_room', seed=42)
     shape_weights = HyperParams.get_shaped_reward_weights(0.0)
-    reward_shaper = RewardShaper(env, shape_weights)
+    reward_shaper = RewardShaper(env, shape_weights, 'cramped_room')
 
     swap_counts = []
 
@@ -105,7 +83,7 @@ def test_team_advantages(num_episodes=10):
     print("="*60)
 
     device = torch.device('cpu')
-    env = build_env('cramped_room', seed=42)
+    env = build_overcooked_env('cramped_room', seed=42)
 
     # Create networks
     actors = [
@@ -175,9 +153,9 @@ def test_shaped_rewards(num_episodes=50):
     print("TEST 3: Shaped Reward Event Frequencies")
     print("="*60)
 
-    env = build_env('cramped_room', seed=42)
+    env = build_overcooked_env('cramped_room', seed=42)
     shape_weights = HyperParams.get_shaped_reward_weights(0.0)
-    reward_shaper = RewardShaper(env, shape_weights)
+    reward_shaper = RewardShaper(env, shape_weights, 'cramped_room')
 
     total_events = Counter()
 
@@ -234,7 +212,7 @@ def test_determinism(num_trials=3):
         np.random.seed(42)
         torch.manual_seed(42)
 
-        env = build_env('cramped_room', seed=42)
+        env = build_overcooked_env('cramped_room', seed=42)
 
         # Run one episode with fixed actions
         obs = env.reset()

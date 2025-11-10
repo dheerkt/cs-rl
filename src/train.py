@@ -8,47 +8,13 @@ import sys
 import numpy as np
 import torch
 
-# Import Overcooked environment
-from overcooked_ai_py.mdp.overcooked_mdp import OvercookedGridworld
-from overcooked_ai_py.mdp.overcooked_env import OvercookedEnv
-
 # Import our modules
-from models import ActorNetwork, CentralizedCritic
-from ppo import PPO
-from reward_shaping import RewardShaper
-from utils import Logger, CollaborationMetrics, save_checkpoint, print_training_stats
+from .env_builder import build_overcooked_env
+from .models import ActorNetwork, CentralizedCritic
+from .ppo import PPO
+from .reward_shaping import RewardShaper
+from .utils import Logger, CollaborationMetrics, save_checkpoint, print_training_stats
 from configs.hyperparameters import HyperParams
-
-
-def build_overcooked_env(layout_name, horizon=400, seed=None):
-    """
-    Build Overcooked environment
-
-    Args:
-        layout_name: Layout name (e.g., 'cramped_room')
-        horizon: Episode horizon (default 400, do not change per spec)
-        seed: Random seed for environment (for reproducibility)
-
-    Returns:
-        OvercookedEnv instance
-    """
-    mdp = OvercookedGridworld.from_layout_name(layout_name)
-    env = OvercookedEnv.from_mdp(mdp, horizon=horizon)
-
-    # CRITICAL FIX: Seed environment for reproducibility
-    if seed is not None:
-        try:
-            # Try to seed the environment if it supports it
-            if hasattr(env, 'seed'):
-                env.seed(seed)
-            # Also try to seed the MDP
-            if hasattr(env, 'mdp') and hasattr(env.mdp, 'seed'):
-                env.mdp.seed(seed)
-        except Exception as e:
-            # Some versions might not support seeding, that's okay
-            print(f"Warning: Could not seed environment: {e}")
-
-    return env
 
 
 def train(args):
@@ -63,12 +29,25 @@ def train(args):
     torch.manual_seed(args.seed)
 
     # Device
-    device = torch.device('cuda' if torch.cuda.is_available() and not args.cpu else 'cpu')
+    device = torch.device(
+        "cuda" if torch.cuda.is_available() and not args.cpu else "cpu"
+    )
     print(f"Using device: {device}")
 
     # Build environment with seeding
     print(f"\nBuilding Overcooked environment: {args.layout}")
     env = build_overcooked_env(args.layout, horizon=400, seed=args.seed)
+
+    # Optional tripwire: ensure underlying MLAM wasn't created by mistake
+    base_env = env.env
+    if hasattr(base_env, "_mlam") and getattr(base_env, "_mlam") not in (None, False):
+        try:
+            from overcooked_ai_py.planning.planners import MediumLevelActionManager
+            if isinstance(base_env._mlam, MediumLevelActionManager):
+                raise RuntimeError("MLAM constructed unexpectedly; remove any featurize_state_mdp/mlam usage.")
+        except ImportError:
+            pass
+
     print(f"Observation shape: {HyperParams.obs_dim}")
     print(f"Action space: {HyperParams.action_dim}")
     print(f"Random seed: {args.seed}")
@@ -80,20 +59,20 @@ def train(args):
             obs_dim=HyperParams.obs_dim,
             action_dim=HyperParams.action_dim,
             hidden_size=HyperParams.hidden_size,
-            num_layers=HyperParams.num_layers
+            num_layers=HyperParams.num_layers,
         ).to(device),
         ActorNetwork(
             obs_dim=HyperParams.obs_dim,
             action_dim=HyperParams.action_dim,
             hidden_size=HyperParams.hidden_size,
-            num_layers=HyperParams.num_layers
-        ).to(device)
+            num_layers=HyperParams.num_layers,
+        ).to(device),
     ]
 
     critic = CentralizedCritic(
         joint_obs_dim=HyperParams.joint_obs_dim,
         hidden_size=HyperParams.hidden_size,
-        num_layers=HyperParams.num_layers
+        num_layers=HyperParams.num_layers,
     ).to(device)
 
     # Create PPO agent
@@ -107,11 +86,15 @@ def train(args):
     if args.resume:
         checkpoint_path = os.path.join(args.checkpoint_dir, f"{args.layout}_latest.pt")
         if os.path.exists(checkpoint_path):
-            from utils import load_checkpoint
+            from .utils import load_checkpoint
+
             start_episode = load_checkpoint(
-                actors, critic,
-                ppo.actor_optimizer, ppo.critic_optimizer,
-                checkpoint_path, device
+                actors,
+                critic,
+                ppo.actor_optimizer,
+                ppo.critic_optimizer,
+                checkpoint_path,
+                device,
             )
             logger.load()
 
@@ -128,7 +111,7 @@ def train(args):
         # Initialize reward shaper
         training_progress = episode / args.episodes
         shape_weights = HyperParams.get_shaped_reward_weights(training_progress)
-        reward_shaper = RewardShaper(env, shape_weights)
+        reward_shaper = RewardShaper(env, shape_weights, args.layout)
         reward_shaper.reset(state)
 
         # Initialize collaboration metrics tracker
@@ -148,7 +131,7 @@ def train(args):
         # Episode rollout
         while not done:
             # Get observations for both agents
-            observations = [obs['both_agent_obs'][0], obs['both_agent_obs'][1]]
+            observations = [obs["both_agent_obs"][0], obs["both_agent_obs"][1]]
 
             # Select actions
             actions, log_probs, entropies, value = ppo.select_actions(observations)
@@ -177,9 +160,7 @@ def train(args):
             # Store transition
             joint_obs = np.concatenate(observations)
             ppo.buffer.add(
-                observations, joint_obs,
-                actions, log_probs,
-                shaped_rewards, value, done
+                observations, joint_obs, actions, log_probs, shaped_rewards, value, done
             )
 
             # Update state
@@ -191,45 +172,80 @@ def train(args):
 
             # PPO update when buffer is full
             if len(ppo.buffer) >= HyperParams.batch_size:
-                next_observations = [next_obs['both_agent_obs'][0], next_obs['both_agent_obs'][1]]
+                next_observations = [
+                    next_obs["both_agent_obs"][0],
+                    next_obs["both_agent_obs"][1],
+                ]
                 update_stats = ppo.update(next_observations)
                 logger.log_update(update_stats)
 
         # Log episode with collaboration metrics
         episode_collab_metrics = collab_metrics.get_episode_metrics()
         collab_info = {
-            'idle_time_agent0': idle_time[0] / episode_length if episode_length > 0 else 0,
-            'idle_time_agent1': idle_time[1] / episode_length if episode_length > 0 else 0,
-            'pot_handoffs': episode_collab_metrics['pot_handoffs'],
+            "idle_time_agent0": (
+                idle_time[0] / episode_length if episode_length > 0 else 0
+            ),
+            "idle_time_agent1": (
+                idle_time[1] / episode_length if episode_length > 0 else 0
+            ),
+            "pot_handoffs": episode_collab_metrics["pot_handoffs"],
         }
-        logger.log_episode(episode + 1, episode_reward, num_soups, episode_length, collab_info)
+        logger.log_episode(
+            episode + 1, episode_reward, num_soups, episode_length, collab_info
+        )
 
-        # Print stats periodically
+        # Print stats periodically and write to JSONL
         if (episode + 1) % HyperParams.log_interval == 0:
             recent_stats = logger.get_recent_stats()
+
+            # Prepare JSONL record
+            jsonl_record = {
+                'episode': episode + 1,
+                'avg_soups_last_100': float(recent_stats['avg_soups']),
+                'max_soups_last_100': int(recent_stats['max_soups']),
+                'avg_reward_last_100': float(recent_stats['avg_reward']),
+            }
+
+            # Add update stats if available
             if ppo.actor_losses:
                 update_stats = {
-                    'actor_loss': ppo.actor_losses[-1],
-                    'critic_loss': ppo.critic_losses[-1],
-                    'entropy': ppo.entropies[-1],
+                    "actor_loss": ppo.actor_losses[-1],
+                    "critic_loss": ppo.critic_losses[-1],
+                    "entropy": ppo.entropies[-1],
                 }
+                jsonl_record.update({
+                    'actor_loss': float(update_stats['actor_loss']),
+                    'critic_loss': float(update_stats['critic_loss']),
+                    'entropy': float(update_stats['entropy']),
+                })
                 print_training_stats(episode + 1, update_stats, recent_stats)
+
+            # Write to JSONL file
+            logger.log_jsonl(jsonl_record)
 
         # Save checkpoint periodically
         if (episode + 1) % HyperParams.save_interval == 0:
-            checkpoint_path = os.path.join(args.checkpoint_dir, f"{args.layout}_ep{episode+1}.pt")
+            checkpoint_path = os.path.join(
+                args.checkpoint_dir, f"{args.layout}_ep{episode+1}.pt"
+            )
             save_checkpoint(
-                actors, critic,
-                ppo.actor_optimizer, ppo.critic_optimizer,
-                episode + 1, checkpoint_path
+                actors,
+                critic,
+                ppo.actor_optimizer,
+                ppo.critic_optimizer,
+                episode + 1,
+                checkpoint_path,
             )
 
             # Save latest checkpoint
             latest_path = os.path.join(args.checkpoint_dir, f"{args.layout}_latest.pt")
             save_checkpoint(
-                actors, critic,
-                ppo.actor_optimizer, ppo.critic_optimizer,
-                episode + 1, latest_path
+                actors,
+                critic,
+                ppo.actor_optimizer,
+                ppo.critic_optimizer,
+                episode + 1,
+                latest_path,
             )
 
             # Save metrics
@@ -244,11 +260,15 @@ def train(args):
     print("\nTraining complete!")
     final_path = os.path.join(args.checkpoint_dir, f"{args.layout}_final.pt")
     save_checkpoint(
-        actors, critic,
-        ppo.actor_optimizer, ppo.critic_optimizer,
-        args.episodes, final_path
+        actors,
+        critic,
+        ppo.actor_optimizer,
+        ppo.critic_optimizer,
+        args.episodes,
+        final_path,
     )
     logger.save()
+    logger.close()  # Close JSONL file
 
     # Final plot
     plot_path = os.path.join(args.graph_dir, f"{args.layout}_training_final.png")
@@ -264,30 +284,44 @@ def train(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Train PPO with Centralized Critic on Overcooked')
+    parser = argparse.ArgumentParser(
+        description="Train PPO with Centralized Critic on Overcooked"
+    )
 
     # Environment
-    parser.add_argument('--layout', type=str, required=True,
-                        choices=['cramped_room', 'coordination_ring', 'counter_circuit_o_1order'],
-                        help='Overcooked layout name')
-    parser.add_argument('--episodes', type=int, default=50000,
-                        help='Number of training episodes')
+    parser.add_argument(
+        "--layout",
+        type=str,
+        required=True,
+        choices=["cramped_room", "coordination_ring", "counter_circuit_o_1order"],
+        help="Overcooked layout name",
+    )
+    parser.add_argument(
+        "--episodes", type=int, default=50000, help="Number of training episodes"
+    )
 
     # Training
-    parser.add_argument('--seed', type=int, default=42,
-                        help='Random seed')
-    parser.add_argument('--cpu', action='store_true',
-                        help='Force CPU usage even if GPU available')
-    parser.add_argument('--resume', action='store_true',
-                        help='Resume from latest checkpoint')
+    parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    parser.add_argument(
+        "--cpu", action="store_true", help="Force CPU usage even if GPU available"
+    )
+    parser.add_argument(
+        "--resume", action="store_true", help="Resume from latest checkpoint"
+    )
 
     # Directories
-    parser.add_argument('--log_dir', type=str, default='results/logs',
-                        help='Directory for logs')
-    parser.add_argument('--checkpoint_dir', type=str, default='results/models',
-                        help='Directory for model checkpoints')
-    parser.add_argument('--graph_dir', type=str, default='results/graphs',
-                        help='Directory for graphs')
+    parser.add_argument(
+        "--log_dir", type=str, default="results/logs", help="Directory for logs"
+    )
+    parser.add_argument(
+        "--checkpoint_dir",
+        type=str,
+        default="results/models",
+        help="Directory for model checkpoints",
+    )
+    parser.add_argument(
+        "--graph_dir", type=str, default="results/graphs", help="Directory for graphs"
+    )
 
     args = parser.parse_args()
 
@@ -300,5 +334,5 @@ def main():
     train(args)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

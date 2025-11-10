@@ -136,6 +136,12 @@ class Logger:
         self.layout_name = layout_name
         os.makedirs(log_dir, exist_ok=True)
 
+        # JSONL file for real-time logging
+        self.jsonl_path = os.path.join(log_dir, f"{layout_name}.jsonl")
+        print(f"Logging to: {os.path.abspath(self.jsonl_path)}")
+        # Line-buffered file for immediate writes
+        self.jsonl_file = open(self.jsonl_path, "a", buffering=1)
+
         # Metrics
         self.episode_rewards = []
         self.episode_soups = []
@@ -191,6 +197,20 @@ class Logger:
         self.critic_losses.append(stats['critic_loss'])
         self.entropies.append(stats['entropy'])
 
+    def log_jsonl(self, record):
+        """
+        Write a JSON line to the log file with immediate flush
+
+        Args:
+            record: Dictionary to log as JSON
+        """
+        import time
+        record['timestamp'] = time.time()
+        self.jsonl_file.write(json.dumps(record) + '\n')
+        self.jsonl_file.flush()
+        # Force write to disk for real-time monitoring
+        os.fsync(self.jsonl_file.fileno())
+
     def get_recent_stats(self):
         """
         Get recent statistics
@@ -203,6 +223,15 @@ class Logger:
             'avg_soups': np.mean(self.recent_soups) if self.recent_soups else 0,
             'max_soups': np.max(self.recent_soups) if self.recent_soups else 0,
         }
+
+    def close(self):
+        """Close JSONL file"""
+        try:
+            self.jsonl_file.flush()
+            os.fsync(self.jsonl_file.fileno())
+            self.jsonl_file.close()
+        except Exception:
+            pass
 
     def save(self):
         """Save all metrics to disk"""

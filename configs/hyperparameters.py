@@ -39,6 +39,15 @@ class HyperParams:
     ACTION_STAY = 4
     ACTION_INTERACT = 5
 
+    # Canonical (expected) start positions for each layout
+    # We check if agent 0 spawned at the first position or was swapped.
+    # These were discovered by running the environments and observing actual spawn positions
+    LAYOUT_START_POSITIONS = {
+        'cramped_room': ((1, 2), (3, 1)),
+        'coordination_ring': ((2, 1), (1, 2)),
+        'counter_circuit_o_1order': ((3, 3), (3, 1))
+    }
+
     # Reward Shaping (fixed across all layouts)
     shape_onion_in_pot = 0.5        # Bonus for placing onion in pot
     shape_cooking_start = 1.0       # Bonus for starting to cook with 3 onions

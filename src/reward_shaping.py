@@ -6,6 +6,7 @@ We must swap shaped rewards to match the correct agent.
 """
 
 import numpy as np
+from configs.hyperparameters import HyperParams
 
 
 class RewardShaper:
@@ -13,16 +14,18 @@ class RewardShaper:
     Handles reward shaping with proper agent-index correction
     """
 
-    def __init__(self, env, shape_weights):
+    def __init__(self, env, shape_weights, layout_name):
         """
         Initialize reward shaper
 
         Args:
             env: Overcooked environment
             shape_weights: Dictionary of shaping reward weights
+            layout_name: Name of the layout (for swap detection)
         """
         self.env = env
         self.shape_weights = shape_weights
+        self.layout_name = layout_name
 
         # Track initial positions to detect swaps
         self.initial_positions = None
@@ -130,20 +133,29 @@ class RewardShaper:
         Returns:
             True if agents were swapped (player 0 is not at position 0)
         """
-        # In Overcooked, agents can start at different positions each episode
-        # The environment randomly assigns agents to starting positions
-        # We detect this ONCE at reset and cache it for the whole episode
+        # CRITICAL FIX: Use canonical start positions to detect swaps
+        if self.layout_name not in HyperParams.LAYOUT_START_POSITIONS:
+            print(f"Warning: No canonical start positions found for {self.layout_name}. Assuming no swap.")
+            return False
 
-        # For now, we use a simple heuristic: if this layout has known spawn positions,
-        # we could check against them. Without that info, we assume no swap.
-        # This is safe because the observations are always correctly ordered.
+        # Get the canonical "first" start position for this layout
+        canonical_pos_0 = HyperParams.LAYOUT_START_POSITIONS[self.layout_name][0]
 
-        # TODO: If you know the canonical spawn positions for each layout,
-        # you can add them here to properly detect swaps.
-        # For now, we return False (no swap detection)
-        # The key fix is that this is called ONCE per episode, not every step.
+        # Get the actual position agent 0 spawned at
+        # self.initial_positions was already set in reset()
+        actual_pos_0 = self.initial_positions[0]
 
-        return False  # Conservative: assume no swap unless we can detect it properly
+        # If agent 0's actual start pos is not the canonical start pos, they were swapped.
+        swapped = (actual_pos_0 != canonical_pos_0)
+
+        if swapped:
+            # Verify they are at the *other* start position, just to be safe
+            canonical_pos_1 = HyperParams.LAYOUT_START_POSITIONS[self.layout_name][1]
+            if actual_pos_0 != canonical_pos_1:
+                print(f"Warning: Agent 0 at {actual_pos_0}, not at either canonical start pos.")
+                return False  # Fallback
+
+        return swapped
 
     def _compute_agent_shaping(self, agent_id, state):
         """

@@ -9,29 +9,9 @@ import torch
 import matplotlib.pyplot as plt
 import json
 
-from overcooked_ai_py.mdp.overcooked_mdp import OvercookedGridworld
-from overcooked_ai_py.mdp.overcooked_env import OvercookedEnv
-
-from models import ActorNetwork, CentralizedCritic
+from .env_builder import build_overcooked_env
+from .models import ActorNetwork, CentralizedCritic
 from configs.hyperparameters import HyperParams
-
-
-def build_overcooked_env(layout_name, horizon=400, seed=None):
-    """Build Overcooked environment with optional seeding"""
-    mdp = OvercookedGridworld.from_layout_name(layout_name)
-    env = OvercookedEnv.from_mdp(mdp, horizon=horizon)
-
-    # Seed for reproducibility
-    if seed is not None:
-        try:
-            if hasattr(env, 'seed'):
-                env.seed(seed)
-            if hasattr(env, 'mdp') and hasattr(env.mdp, 'seed'):
-                env.mdp.seed(seed)
-        except Exception:
-            pass
-
-    return env
 
 
 def load_trained_agents(checkpoint_path, device='cpu'):
