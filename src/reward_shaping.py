@@ -31,10 +31,14 @@ class RewardShaper:
             "onion_in_pot": 0,
             "cooking_start": 0,
             "soup_ready": 0,
+            "soup_pickup": 0,
             "correct_delivery": 0,
             "penalty": 0,
         }
         self.soups_delivered_this_episode = 0
+        # Soup ID tracking to prevent pickup-drop exploits
+        self.picked_up_soups = set()
+        self.delivered_soups = set()
 
     def update_weights(self, new_weights, episode):
         """Update shaping weights and episode count for annealing."""
@@ -46,7 +50,9 @@ class RewardShaper:
         self.swapped = self._detect_swap_at_reset(state)
         self.prev_pots = self._get_pot_states(state)
         self.prev_state = state
-        self.episode_shaping_budget = {"soup_ready": 10, "correct_delivery": 10}
+        # Reset soup tracking for new episode
+        self.picked_up_soups = set()
+        self.delivered_soups = set()
         self.soups_delivered_this_episode = 0
         for k in self.event_counts:
             self.event_counts[k] = 0
@@ -69,11 +75,13 @@ class RewardShaper:
             "agent0_onion_in_pot": 0.0,
             "agent0_cooking_start": 0.0,
             "agent0_soup_ready": 0.0,
+            "agent0_soup_pickup": 0.0,
             "agent0_correct_delivery": 0.0,
             "agent0_penalty": 0.0,
             "agent1_onion_in_pot": 0.0,
             "agent1_cooking_start": 0.0,
             "agent1_soup_ready": 0.0,
+            "agent1_soup_pickup": 0.0,
             "agent1_correct_delivery": 0.0,
             "agent1_penalty": 0.0,
         }
@@ -304,26 +312,56 @@ class RewardShaper:
             "onion_in_pot": 0.0,
             "cooking_start": 0.0,
             "soup_ready": 0.0,
+            "soup_pickup": 0.0,
             "correct_delivery": 0.0,
             "penalty": 0.0,
         }
 
-        # Team pot events
+        # Team pot events (NO BUDGETS - allow continuous learning)
         if pot_events["onion_added"] > 0:
-            s["onion_in_pot"] = float(w.get("onion_in_pot", 0.05))
+            s["onion_in_pot"] = float(w.get("onion_in_pot", 0.25))
         if pot_events["cooking_started"] > 0:
-            s["cooking_start"] = float(w.get("cooking_start", 0.15))
-        if (
-            pot_events["soup_ready"] > 0
-            and self.episode_shaping_budget["soup_ready"] > 0
-        ):
-            s["soup_ready"] = float(w.get("soup_ready", 0.30))
-            self.episode_shaping_budget["soup_ready"] -= 1
+            s["cooking_start"] = float(w.get("cooking_start", 0.30))
+        if pot_events["soup_ready"] > 0:
+            s["soup_ready"] = float(w.get("soup_ready", 0.40))
 
-        # Team delivery
-        if delivery_occurred and self.episode_shaping_budget["correct_delivery"] > 0:
-            s["correct_delivery"] = float(w.get("correct_delivery", 0.50))
-            self.episode_shaping_budget["correct_delivery"] -= 1
+        # Individual soup pickup with ID tracking (prevents pickup-drop exploit)
+        p = state.players[agent_id]
+        pp = self.prev_state.players[agent_id]
+        prev_held = getattr(pp.held_object, "name", None) if pp.held_object else None
+        curr_held = getattr(p.held_object, "name", None) if p.held_object else None
+        
+        if prev_held is None and curr_held == "soup":
+            soup_id = id(p.held_object) if p.held_object else None
+            if soup_id and soup_id not in self.picked_up_soups:
+                s["soup_pickup"] = float(w.get("soup_pickup", 0.35))
+                self.picked_up_soups.add(soup_id)
+                if DEBUG_POT_EVENTS:
+                    print(f"[POT_DEBUG] ✓ soup_pickup by agent {agent_id} (soup_id: {soup_id})")
+            elif soup_id in self.picked_up_soups and DEBUG_POT_EVENTS:
+                print(f"[POT_DEBUG] ⚠ soup already picked up (soup_id: {soup_id})")
+
+        # Team delivery with ID tracking (prevents duplicate delivery credits)
+        if delivery_occurred:
+            # Track which soup was delivered to prevent duplicate credits
+            delivered_soup_id = None
+            for aid in range(2):
+                pp = self.prev_state.players[aid]
+                prev_held = getattr(pp.held_object, "name", None) if pp.held_object else None
+                if prev_held == "soup":
+                    delivered_soup_id = id(pp.held_object) if pp.held_object else None
+                    break
+            
+            if delivered_soup_id and delivered_soup_id not in self.delivered_soups:
+                s["correct_delivery"] = float(w.get("correct_delivery", 0.50))
+                self.delivered_soups.add(delivered_soup_id)
+                if DEBUG_DELIVERY_EVENTS:
+                    print(f"[DELIVERY_DEBUG] ✓ correct_delivery credited (soup_id: {delivered_soup_id})")
+            elif delivered_soup_id in self.delivered_soups and DEBUG_DELIVERY_EVENTS:
+                print(f"[DELIVERY_DEBUG] ⚠ soup already delivered (soup_id: {delivered_soup_id})")
+            elif not delivered_soup_id:
+                # Fallback: credit delivery even without soup ID (shouldn't happen often)
+                s["correct_delivery"] = float(w.get("correct_delivery", 0.50))
 
         # Penalty
         if self._waste_event(state):
