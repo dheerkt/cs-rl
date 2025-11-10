@@ -90,6 +90,38 @@ class RewardShaper:
         pot_events = self._diff_pots_dict(self.prev_pots, curr_pots)
         delivery_occurred = self._correct_delivery_event(state, sparse_rewards)
 
+        # Validation: catch suspicious onion counts
+        if pot_events["onion_added"] > 10:
+            print(f"[WARNING] Suspicious onion count: {pot_events['onion_added']} in single timestep!")
+            print(f"prev_pots: {self.prev_pots}")
+            print(f"curr_pots: {curr_pots}")
+
+        # Track actual event magnitudes (not per-timestep occurrences)
+        self.event_counts["onion_in_pot"] += pot_events["onion_added"]
+        self.event_counts["cooking_start"] += pot_events["cooking_started"]
+        self.event_counts["soup_ready"] += pot_events["soup_ready"]
+
+        # Track per-agent pickup events (count actual pickups, not timesteps)
+        for agent_id in range(2):
+            p = state.players[agent_id]
+            pp = self.prev_state.players[agent_id]
+            prev_held = getattr(pp.held_object, "name", None) if pp.held_object else None
+            curr_held = getattr(p.held_object, "name", None) if p.held_object else None
+            
+            if prev_held is None and curr_held == "soup":
+                soup_id = id(p.held_object) if p.held_object else None
+                if soup_id and soup_id not in self.picked_up_soups:
+                    self.event_counts["soup_pickup"] += 1
+
+        # Track delivery events (count actual deliveries, not timesteps)
+        if delivery_occurred:
+            self.event_counts["correct_delivery"] += 1
+
+        # Track penalty events
+        if self._waste_event(state):
+            self.event_counts["penalty"] += 1
+
+        # Compute shaped rewards for each agent
         for agent_id in range(2):
             s = self._compute_agent_shaping(
                 agent_id, state, pot_events, delivery_occurred
@@ -98,8 +130,6 @@ class RewardShaper:
             prefix = f"agent{agent_id}_"
             for k, v in s.items():
                 info[prefix + k] = float(v)
-                if v != 0:
-                    self.event_counts[k] = self.event_counts.get(k, 0) + 1
 
         if self.swapped:
             shaped = shaped[::-1]
