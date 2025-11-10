@@ -1,309 +1,253 @@
+# ppo.py
 """
 PPO (Proximal Policy Optimization) with Centralized Critic
 Implements CTDE (Centralized Training, Decentralized Execution)
 """
 
+from dataclasses import dataclass
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import numpy as np
-from collections import deque
 
 
 class RolloutBuffer:
     """
-    Buffer for storing trajectories during rollout
+    On-policy trajectory storage for 2 agents + centralized critic.
+    Stores:
+      - per-agent obs, actions, log_probs, rewards
+      - joint obs for the centralized critic
+      - centralized values and dones
     """
 
     def __init__(self):
-        self.observations = [[], []]  # Per agent
-        self.actions = [[], []]
-        self.log_probs = [[], []]
-        self.rewards = [[], []]
-        self.values = []  # Centralized value
-        self.dones = []
-        self.joint_observations = []  # For centralized critic
+        self.clear()
 
-    def add(self, obs, joint_obs, actions, log_probs, rewards, value, done):
-        """
-        Add a transition to buffer
-
-        Args:
-            obs: List of observations [obs_agent0, obs_agent1]
-            joint_obs: Concatenated observation
-            actions: List of actions [action0, action1]
-            log_probs: List of log probs [log_prob0, log_prob1]
-            rewards: List of rewards [reward0, reward1]
-            value: Centralized value estimate
-            done: Done flag
-        """
+    def add(self, obs_pair, joint_obs, actions, log_probs, rewards, value, done):
+        # obs_pair: [obs0, obs1] (np arrays)
         for i in range(2):
-            self.observations[i].append(obs[i])
-            self.actions[i].append(actions[i])
-            self.log_probs[i].append(log_probs[i])
-            self.rewards[i].append(rewards[i])
-
-        self.joint_observations.append(joint_obs)
-        self.values.append(value)
-        self.dones.append(done)
+            self.observations[i].append(np.asarray(obs_pair[i], dtype=np.float32))
+            self.actions[i].append(int(actions[i]))
+            self.log_probs[i].append(float(log_probs[i]))
+            self.rewards[i].append(float(rewards[i]))
+        self.joint_observations.append(np.asarray(joint_obs, dtype=np.float32))
+        self.values.append(float(value))
+        self.dones.append(bool(done))
 
     def get(self):
-        """
-        Get all data as numpy arrays
-
-        Returns:
-            Dictionary of numpy arrays
-        """
         return {
-            'observations': [np.array(self.observations[i]) for i in range(2)],
-            'joint_observations': np.array(self.joint_observations),
-            'actions': [np.array(self.actions[i]) for i in range(2)],
-            'log_probs': [np.array(self.log_probs[i]) for i in range(2)],
-            'rewards': [np.array(self.rewards[i]) for i in range(2)],
-            'values': np.array(self.values),
-            'dones': np.array(self.dones),
+            "observations": [np.stack(self.observations[i], axis=0) for i in range(2)],
+            "actions": [np.asarray(self.actions[i], dtype=np.int64) for i in range(2)],
+            "log_probs": [
+                np.asarray(self.log_probs[i], dtype=np.float32) for i in range(2)
+            ],
+            "rewards": [
+                np.asarray(self.rewards[i], dtype=np.float32) for i in range(2)
+            ],
+            "joint_observations": np.stack(self.joint_observations, axis=0).astype(
+                np.float32
+            ),
+            "values": np.asarray(self.values, dtype=np.float32),
+            "dones": np.asarray(self.dones, dtype=np.float32),
         }
 
     def clear(self):
-        """Clear buffer"""
         self.observations = [[], []]
         self.actions = [[], []]
         self.log_probs = [[], []]
         self.rewards = [[], []]
+        self.joint_observations = []
         self.values = []
         self.dones = []
-        self.joint_observations = []
 
     def __len__(self):
-        """Return buffer size"""
         return len(self.dones)
 
 
+@dataclass
 class PPO:
-    """
-    PPO algorithm with centralized critic for multi-agent learning
-    """
+    actors: list
+    critic: nn.Module
+    hp: object
+    device: str = "cpu"
 
-    def __init__(self, actors, critic, hyperparams, device='cpu'):
-        """
-        Initialize PPO
-
-        Args:
-            actors: List of actor networks [actor0, actor1]
-            critic: Centralized critic network
-            hyperparams: Hyperparameter object
-            device: Device to run on
-        """
-        self.actors = actors
-        self.critic = critic
-        self.hp = hyperparams
-        self.device = device
-
-        # Optimizers
-        actor_params = list(actors[0].parameters()) + list(actors[1].parameters())
+    def __post_init__(self):
+        actor_params = list(self.actors[0].parameters()) + list(
+            self.actors[1].parameters()
+        )
         self.actor_optimizer = optim.Adam(actor_params, lr=self.hp.lr)
-        self.critic_optimizer = optim.Adam(critic.parameters(), lr=self.hp.lr)
-
-        # Rollout buffer
+        self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=self.hp.lr)
         self.buffer = RolloutBuffer()
+        self.update_step = 0
+        self._team_adv_checked = False
 
-        # Statistics
-        self.actor_losses = []
-        self.critic_losses = []
-        self.entropies = []
+    # ------------- Acting -------------
 
+    @torch.no_grad()
     def select_actions(self, observations):
         """
-        Select actions for both agents
-
-        Args:
-            observations: List of observations [obs0, obs1]
-
-        Returns:
-            actions: List of actions
-            log_probs: List of log probabilities
-            entropies: List of entropies
-            value: Centralized value estimate
+        observations: [obs0, obs1] each (96,)
+        Returns: actions [a0,a1], log_probs [lp0,lp1], entropies [H0,H1], value
         """
-        actions = []
-        log_probs = []
-        entropies = []
+        actions, logps, ents = [], [], []
+        obs_tensors = []
+        for i, actor in enumerate(self.actors):
+            obs_tensor = torch.as_tensor(
+                observations[i], dtype=torch.float32, device=self.device
+            ).unsqueeze(0)
+            action, logp, ent = actor.get_action(obs_tensor)
+            actions.append(int(action.item()))
+            logps.append(float(logp.item()))
+            ents.append(float(ent.item()))
+            obs_tensors.append(obs_tensor)
 
-        # Get actions from each actor
-        with torch.no_grad():
-            for i, actor in enumerate(self.actors):
-                obs_tensor = torch.FloatTensor(observations[i]).unsqueeze(0).to(self.device)
-                action, log_prob, entropy = actor.get_action(obs_tensor)
-                actions.append(action.item())
-                log_probs.append(log_prob.item())
-                entropies.append(entropy.item())
+        joint_obs = np.concatenate(observations, axis=0)
+        joint_obs_t = torch.as_tensor(
+            joint_obs, dtype=torch.float32, device=self.device
+        ).unsqueeze(0)
+        value = float(self.critic(joint_obs_t).item())
+        return actions, logps, ents, value, joint_obs
 
-            # Get centralized value
-            joint_obs = np.concatenate(observations)
-            joint_obs_tensor = torch.FloatTensor(joint_obs).unsqueeze(0).to(self.device)
-            value = self.critic(joint_obs_tensor).item()
+    # ------------- Learning -------------
 
-        return actions, log_probs, entropies, value
+    @staticmethod
+    def _compute_gae(rewards, values, dones, next_value, gamma, lam):
+        T = len(rewards)
+        adv = np.zeros(T, dtype=np.float32)
+        last = 0.0
+        for t in reversed(range(T)):
+            nv = next_value if t == T - 1 else values[t + 1]
+            delta = rewards[t] + gamma * nv * (1.0 - dones[t]) - values[t]
+            last = delta + gamma * lam * (1.0 - dones[t]) * last
+            adv[t] = last
+        returns = adv + values
+        return adv, returns
 
-    def compute_gae(self, rewards, values, dones, next_value):
+    def update(self, next_obs_pair):
         """
-        Compute Generalized Advantage Estimation (GAE)
-
-        Args:
-            rewards: Reward array [timesteps]
-            values: Value array [timesteps]
-            dones: Done array [timesteps]
-            next_value: Value of next state
-
-        Returns:
-            advantages: Advantage estimates [timesteps]
-            returns: Return estimates [timesteps]
+        Perform PPO updates using a single team advantage shared by both actors,
+        and a centralized critic trained on team returns.
         """
-        advantages = np.zeros_like(rewards)
-        last_gae = 0
-
-        # Compute advantages backward
-        for t in reversed(range(len(rewards))):
-            if t == len(rewards) - 1:
-                next_val = next_value
-            else:
-                next_val = values[t + 1]
-
-            # TD error
-            delta = rewards[t] + self.hp.gamma * next_val * (1 - dones[t]) - values[t]
-
-            # GAE
-            advantages[t] = last_gae = delta + self.hp.gamma * self.hp.gae_lambda * (1 - dones[t]) * last_gae
-
-        # Returns = advantages + values
-        returns = advantages + values
-
-        return advantages, returns
-
-    def update(self, next_obs):
-        """
-        Update policy and value function using PPO
-
-        Args:
-            next_obs: Next observation for computing final value
-
-        Returns:
-            Dictionary of training statistics
-        """
-        # Get buffer data
         data = self.buffer.get()
 
-        # Compute next value for GAE
+        # Next value for GAE
         with torch.no_grad():
-            joint_next_obs = np.concatenate(next_obs)
-            joint_next_obs_tensor = torch.FloatTensor(joint_next_obs).unsqueeze(0).to(self.device)
-            next_value = self.critic(joint_next_obs_tensor).item()
+            joint_next = np.concatenate(next_obs_pair, axis=0)
+            joint_next_t = torch.as_tensor(
+                joint_next, dtype=torch.float32, device=self.device
+            ).unsqueeze(0)
+            next_value = float(self.critic(joint_next_t).item())
 
-        # CRITICAL FIX: Compute TEAM rewards and use single GAE for both actors
-        # The centralized critic should predict team value, so we need team returns
-        # Both actors use the same team advantage for proper CTDE
+        # Team rewards and single GAE
+        team_rewards = data["rewards"][0] + data["rewards"][1]
 
-        # Compute team rewards (sum, not average!)
-        team_rewards = data['rewards'][0] + data['rewards'][1]
+        # One-time assertions to guard CTDE wiring
+        if not self._team_adv_checked:
+            assert (
+                data["rewards"][0].shape == data["rewards"][1].shape
+            ), "Per-agent rewards must align over time"
+            assert (
+                data["values"].ndim == 1
+                and data["dones"].ndim == 1
+                and data["values"].shape[0] == len(team_rewards)
+            )
+            self._team_adv_checked = True
 
-        # Single GAE computation on team rewards
-        team_advantages, team_returns = self.compute_gae(
-            team_rewards,
-            data['values'],
-            data['dones'],
-            next_value
+        adv, rets = self._compute_gae(
+            rewards=team_rewards,
+            values=data["values"],
+            dones=data["dones"],
+            next_value=next_value,
+            gamma=self.hp.gamma,
+            lam=self.hp.gae_lambda,
         )
+        # Normalize single team advantage once
+        adv = (adv - adv.mean()) / (adv.std() + 1e-8)
 
-        # Normalize advantages ONCE
-        adv_mean = team_advantages.mean()
-        adv_std = team_advantages.std() + 1e-8
-        team_advantages = (team_advantages - adv_mean) / adv_std
+        # To tensors
+        obs_t = [
+            torch.as_tensor(
+                data["observations"][i], dtype=torch.float32, device=self.device
+            )
+            for i in range(2)
+        ]
+        act_t = [
+            torch.as_tensor(data["actions"][i], dtype=torch.int64, device=self.device)
+            for i in range(2)
+        ]
+        oldlp_t = [
+            torch.as_tensor(
+                data["log_probs"][i], dtype=torch.float32, device=self.device
+            )
+            for i in range(2)
+        ]
+        joint_t = torch.as_tensor(
+            data["joint_observations"], dtype=torch.float32, device=self.device
+        )
+        adv_t = torch.as_tensor(adv, dtype=torch.float32, device=self.device)
+        ret_t = torch.as_tensor(rets, dtype=torch.float32, device=self.device)
 
-        # Convert to tensors
-        obs_tensors = [torch.FloatTensor(data['observations'][i]).to(self.device) for i in range(2)]
-        joint_obs_tensor = torch.FloatTensor(data['joint_observations']).to(self.device)
-        action_tensors = [torch.LongTensor(data['actions'][i]).to(self.device) for i in range(2)]
-        old_log_prob_tensors = [torch.FloatTensor(data['log_probs'][i]).to(self.device) for i in range(2)]
-        # Both actors use the SAME team advantage
-        team_advantage_tensor = torch.FloatTensor(team_advantages).to(self.device)
-        team_return_tensor = torch.FloatTensor(team_returns).to(self.device)
+        B = len(data["dones"])
+        idx = np.arange(B)
 
-        # PPO update for multiple epochs
-        batch_size = len(data['dones'])
-        indices = np.arange(batch_size)
+        actor_losses, critic_losses, entropies = [], [], []
 
-        actor_losses = []
-        critic_losses = []
-        entropies = []
-
-        for epoch in range(self.hp.ppo_epochs):
-            np.random.shuffle(indices)
-
-            for start in range(0, batch_size, self.hp.minibatch_size):
-                end = start + self.hp.minibatch_size
-                mb_indices = indices[start:end]
-
-                # Update actors
-                total_actor_loss = 0
-                total_entropy = 0
-
-                # CRITICAL FIX: Both actors use the SAME team advantage
-                mb_team_advantages = team_advantage_tensor[mb_indices]
-
+        for _ in range(self.hp.ppo_epochs):
+            np.random.shuffle(idx)
+            for s in range(0, B, self.hp.minibatch_size):
+                mb = idx[s : s + self.hp.minibatch_size]
+                # Actor updates (both share the same team advantage)
+                total_actor_loss = 0.0
+                total_ent = 0.0
                 for i in range(2):
-                    mb_obs = obs_tensors[i][mb_indices]
-                    mb_actions = action_tensors[i][mb_indices]
-                    mb_old_log_probs = old_log_prob_tensors[i][mb_indices]
+                    mb_obs = obs_t[i][mb]
+                    mb_act = act_t[i][mb]
+                    mb_oldlp = oldlp_t[i][mb]
+                    new_lp, ent = self.actors[i].evaluate_actions(mb_obs, mb_act)
+                    ratio = torch.exp(new_lp - mb_oldlp)
+                    mb_adv = adv_t[mb].detach()
+                    surr1 = ratio * mb_adv
+                    surr2 = (
+                        torch.clamp(
+                            ratio, 1 - self.hp.clip_epsilon, 1 + self.hp.clip_epsilon
+                        )
+                        * mb_adv
+                    )
+                    loss_pi = -torch.min(surr1, surr2).mean()
+                    total_actor_loss = total_actor_loss + loss_pi
+                    total_ent = total_ent + ent.mean()
 
-                    # Get current log probs and entropy
-                    new_log_probs, entropy = self.actors[i].evaluate_actions(mb_obs, mb_actions)
+                total_actor_loss = total_actor_loss - self.hp.entropy_coef * total_ent
 
-                    # Ratio for PPO
-                    ratio = torch.exp(new_log_probs - mb_old_log_probs)
-
-                    # Clipped surrogate objective using TEAM advantage
-                    surr1 = ratio * mb_team_advantages
-                    surr2 = torch.clamp(ratio, 1 - self.hp.clip_epsilon, 1 + self.hp.clip_epsilon) * mb_team_advantages
-                    actor_loss = -torch.min(surr1, surr2).mean()
-
-                    total_actor_loss += actor_loss
-                    total_entropy += entropy.mean()
-
-                # Entropy bonus (encourage exploration)
-                total_actor_loss -= self.hp.entropy_coef * total_entropy
-
-                # Update actors
                 self.actor_optimizer.zero_grad()
                 total_actor_loss.backward()
                 nn.utils.clip_grad_norm_(
-                    list(self.actors[0].parameters()) + list(self.actors[1].parameters()),
-                    self.hp.max_grad_norm
+                    list(self.actors[0].parameters())
+                    + list(self.actors[1].parameters()),
+                    self.hp.max_grad_norm,
                 )
                 self.actor_optimizer.step()
 
-                # Update centralized critic
-                mb_joint_obs = joint_obs_tensor[mb_indices]
-                # CRITICAL FIX: Train critic on TEAM returns (not averaged)
-                mb_team_returns = team_return_tensor[mb_indices]
-
-                values = self.critic(mb_joint_obs).squeeze(-1)
-                critic_loss = nn.MSELoss()(values, mb_team_returns)
+                # Critic update on team returns
+                v_pred = self.critic(joint_t[mb]).squeeze(-1)
+                loss_v = nn.MSELoss()(v_pred, ret_t[mb].detach())
 
                 self.critic_optimizer.zero_grad()
-                critic_loss.backward()
-                nn.utils.clip_grad_norm_(self.critic.parameters(), self.hp.max_grad_norm)
+                loss_v.backward()
+                nn.utils.clip_grad_norm_(
+                    self.critic.parameters(), self.hp.max_grad_norm
+                )
                 self.critic_optimizer.step()
 
-                # Record stats
-                actor_losses.append(total_actor_loss.item())
-                critic_losses.append(critic_loss.item())
-                entropies.append(total_entropy.item() / 2.0)  # Average over agents
+                actor_losses.append(float(total_actor_loss.item()))
+                critic_losses.append(float(loss_v.item()))
+                entropies.append(float((total_ent / 2.0).item()))
 
-        # Clear buffer
         self.buffer.clear()
-
+        self.update_step += 1
         return {
-            'actor_loss': np.mean(actor_losses),
-            'critic_loss': np.mean(critic_losses),
-            'entropy': np.mean(entropies),
+            "update_step": int(self.update_step),
+            "actor_loss": float(np.mean(actor_losses)) if actor_losses else 0.0,
+            "critic_loss": float(np.mean(critic_losses)) if critic_losses else 0.0,
+            "entropy": float(np.mean(entropies)) if entropies else 0.0,
         }
