@@ -1,8 +1,11 @@
 # Quick Start Guide
 
-**Git Commit Hash:** `f3cdf58` (include this in your report!)
+**Git Commit Hash:** `d145e07` (include this in your report!)
 
-**CRITICAL:** This version includes essential bug fixes for agent-swap and team-advantage computation. Training with the previous version would fail!
+**✅ ALL CRITICAL FIXES COMPLETE + IMPROVEMENTS ADDED**
+- Phase 1: Critical bugs fixed (agent-swap, team-advantage, seeding)
+- Phase 2: Improved reward shaping + pot handoffs collaboration metric
+- Validation suite ready to test everything
 
 ## What You Have
 
