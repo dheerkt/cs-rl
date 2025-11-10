@@ -199,33 +199,34 @@ class PPO:
             joint_next_obs_tensor = torch.FloatTensor(joint_next_obs).unsqueeze(0).to(self.device)
             next_value = self.critic(joint_next_obs_tensor).item()
 
-        # Compute advantages and returns for each agent
-        all_advantages = []
-        all_returns = []
+        # CRITICAL FIX: Compute TEAM rewards and use single GAE for both actors
+        # The centralized critic should predict team value, so we need team returns
+        # Both actors use the same team advantage for proper CTDE
 
-        for i in range(2):
-            advantages, returns = self.compute_gae(
-                data['rewards'][i],
-                data['values'],
-                data['dones'],
-                next_value
-            )
-            all_advantages.append(advantages)
-            all_returns.append(returns)
+        # Compute team rewards (sum, not average!)
+        team_rewards = data['rewards'][0] + data['rewards'][1]
 
-        # Normalize advantages (combined from both agents)
-        combined_advantages = np.concatenate(all_advantages)
-        adv_mean = combined_advantages.mean()
-        adv_std = combined_advantages.std() + 1e-8
-        all_advantages = [(adv - adv_mean) / adv_std for adv in all_advantages]
+        # Single GAE computation on team rewards
+        team_advantages, team_returns = self.compute_gae(
+            team_rewards,
+            data['values'],
+            data['dones'],
+            next_value
+        )
+
+        # Normalize advantages ONCE
+        adv_mean = team_advantages.mean()
+        adv_std = team_advantages.std() + 1e-8
+        team_advantages = (team_advantages - adv_mean) / adv_std
 
         # Convert to tensors
         obs_tensors = [torch.FloatTensor(data['observations'][i]).to(self.device) for i in range(2)]
         joint_obs_tensor = torch.FloatTensor(data['joint_observations']).to(self.device)
         action_tensors = [torch.LongTensor(data['actions'][i]).to(self.device) for i in range(2)]
         old_log_prob_tensors = [torch.FloatTensor(data['log_probs'][i]).to(self.device) for i in range(2)]
-        advantage_tensors = [torch.FloatTensor(all_advantages[i]).to(self.device) for i in range(2)]
-        return_tensors = [torch.FloatTensor(all_returns[i]).to(self.device) for i in range(2)]
+        # Both actors use the SAME team advantage
+        team_advantage_tensor = torch.FloatTensor(team_advantages).to(self.device)
+        team_return_tensor = torch.FloatTensor(team_returns).to(self.device)
 
         # PPO update for multiple epochs
         batch_size = len(data['dones'])
@@ -246,11 +247,13 @@ class PPO:
                 total_actor_loss = 0
                 total_entropy = 0
 
+                # CRITICAL FIX: Both actors use the SAME team advantage
+                mb_team_advantages = team_advantage_tensor[mb_indices]
+
                 for i in range(2):
                     mb_obs = obs_tensors[i][mb_indices]
                     mb_actions = action_tensors[i][mb_indices]
                     mb_old_log_probs = old_log_prob_tensors[i][mb_indices]
-                    mb_advantages = advantage_tensors[i][mb_indices]
 
                     # Get current log probs and entropy
                     new_log_probs, entropy = self.actors[i].evaluate_actions(mb_obs, mb_actions)
@@ -258,9 +261,9 @@ class PPO:
                     # Ratio for PPO
                     ratio = torch.exp(new_log_probs - mb_old_log_probs)
 
-                    # Clipped surrogate objective
-                    surr1 = ratio * mb_advantages
-                    surr2 = torch.clamp(ratio, 1 - self.hp.clip_epsilon, 1 + self.hp.clip_epsilon) * mb_advantages
+                    # Clipped surrogate objective using TEAM advantage
+                    surr1 = ratio * mb_team_advantages
+                    surr2 = torch.clamp(ratio, 1 - self.hp.clip_epsilon, 1 + self.hp.clip_epsilon) * mb_team_advantages
                     actor_loss = -torch.min(surr1, surr2).mean()
 
                     total_actor_loss += actor_loss
@@ -280,11 +283,11 @@ class PPO:
 
                 # Update centralized critic
                 mb_joint_obs = joint_obs_tensor[mb_indices]
-                # Use average of both agents' returns for centralized critic
-                mb_returns = (return_tensors[0][mb_indices] + return_tensors[1][mb_indices]) / 2.0
+                # CRITICAL FIX: Train critic on TEAM returns (not averaged)
+                mb_team_returns = team_return_tensor[mb_indices]
 
                 values = self.critic(mb_joint_obs).squeeze(-1)
-                critic_loss = nn.MSELoss()(values, mb_returns)
+                critic_loss = nn.MSELoss()(values, mb_team_returns)
 
                 self.critic_optimizer.zero_grad()
                 critic_loss.backward()

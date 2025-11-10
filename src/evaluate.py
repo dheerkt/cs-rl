@@ -16,10 +16,21 @@ from models import ActorNetwork, CentralizedCritic
 from configs.hyperparameters import HyperParams
 
 
-def build_overcooked_env(layout_name, horizon=400):
-    """Build Overcooked environment"""
+def build_overcooked_env(layout_name, horizon=400, seed=None):
+    """Build Overcooked environment with optional seeding"""
     mdp = OvercookedGridworld.from_layout_name(layout_name)
     env = OvercookedEnv.from_mdp(mdp, horizon=horizon)
+
+    # Seed for reproducibility
+    if seed is not None:
+        try:
+            if hasattr(env, 'seed'):
+                env.seed(seed)
+            if hasattr(env, 'mdp') and hasattr(env.mdp, 'seed'):
+                env.mdp.seed(seed)
+        except Exception:
+            pass
+
     return env
 
 
@@ -108,8 +119,8 @@ def evaluate(env, actors, num_episodes=100, device='cpu', verbose=True):
                     action, _, _ = actor.get_action(obs_tensor, deterministic=True)
                     actions.append(action.item())
 
-                    # Track idle time
-                    if action.item() == 4:  # "stay" action
+                    # Track idle time using action constant
+                    if action.item() == HyperParams.ACTION_STAY:
                         idle_count[i] += 1
 
             # Step environment
@@ -268,8 +279,8 @@ def main():
         else:
             checkpoint_path = os.path.join(args.checkpoint_dir, f"{layout}_final.pt")
 
-        # Build environment
-        env = build_overcooked_env(layout, horizon=400)
+        # Build environment with fixed seed for reproducibility
+        env = build_overcooked_env(layout, horizon=400, seed=42)
 
         # Load agents
         actors = load_trained_agents(checkpoint_path, device)

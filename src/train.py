@@ -20,19 +20,34 @@ from utils import Logger, save_checkpoint, print_training_stats
 from configs.hyperparameters import HyperParams
 
 
-def build_overcooked_env(layout_name, horizon=400):
+def build_overcooked_env(layout_name, horizon=400, seed=None):
     """
     Build Overcooked environment
 
     Args:
         layout_name: Layout name (e.g., 'cramped_room')
         horizon: Episode horizon (default 400, do not change per spec)
+        seed: Random seed for environment (for reproducibility)
 
     Returns:
         OvercookedEnv instance
     """
     mdp = OvercookedGridworld.from_layout_name(layout_name)
     env = OvercookedEnv.from_mdp(mdp, horizon=horizon)
+
+    # CRITICAL FIX: Seed environment for reproducibility
+    if seed is not None:
+        try:
+            # Try to seed the environment if it supports it
+            if hasattr(env, 'seed'):
+                env.seed(seed)
+            # Also try to seed the MDP
+            if hasattr(env, 'mdp') and hasattr(env.mdp, 'seed'):
+                env.mdp.seed(seed)
+        except Exception as e:
+            # Some versions might not support seeding, that's okay
+            print(f"Warning: Could not seed environment: {e}")
+
     return env
 
 
@@ -51,11 +66,12 @@ def train(args):
     device = torch.device('cuda' if torch.cuda.is_available() and not args.cpu else 'cpu')
     print(f"Using device: {device}")
 
-    # Build environment
+    # Build environment with seeding
     print(f"\nBuilding Overcooked environment: {args.layout}")
-    env = build_overcooked_env(args.layout, horizon=400)
+    env = build_overcooked_env(args.layout, horizon=400, seed=args.seed)
     print(f"Observation shape: {HyperParams.obs_dim}")
     print(f"Action space: {HyperParams.action_dim}")
+    print(f"Random seed: {args.seed}")
 
     # Create networks
     print("\nInitializing networks...")
@@ -134,9 +150,9 @@ def train(args):
             # Select actions
             actions, log_probs, entropies, value = ppo.select_actions(observations)
 
-            # Track idle time (action 4 is "stay")
+            # Track idle time using action constant
             for i in range(2):
-                if actions[i] == 4:
+                if actions[i] == HyperParams.ACTION_STAY:
                     idle_time[i] += 1
 
             # Step environment

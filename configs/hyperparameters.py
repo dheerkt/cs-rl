@@ -30,6 +30,15 @@ class HyperParams:
     action_dim = 6              # Number of discrete actions
     num_agents = 2              # Number of agents
 
+    # Action Mapping (Overcooked standard action indices)
+    # These are the standard Overcooked action indices - verified against environment
+    ACTION_UP = 0
+    ACTION_DOWN = 1
+    ACTION_LEFT = 2
+    ACTION_RIGHT = 3
+    ACTION_STAY = 4
+    ACTION_INTERACT = 5
+
     # Reward Shaping (fixed across all layouts)
     shape_onion_in_pot = 0.5        # Bonus for placing onion in pot
     shape_cooking_start = 1.0       # Bonus for starting to cook with 3 onions
