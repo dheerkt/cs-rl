@@ -37,6 +37,10 @@ class RewardShaper:
         self.swapped = self._detect_swap_at_reset(state)
         self.prev_pots = self._get_pot_states(state)
         self.prev_state = state
+        self.episode_shaping_budget = {
+            "soup_ready": 10,
+            "correct_delivery": 10,  # max credits per episode
+        }
         for k in self.event_counts:
             self.event_counts[k] = 0
 
@@ -63,12 +67,15 @@ class RewardShaper:
             "agent1_penalty": 0.0,
         }
 
-        # Compute pot events once per step
+        # Compute pot events and delivery once per step (team events)
         curr_pots = self._get_pot_states(state)
         pot_events = self._diff_pots_dict(self.prev_pots, curr_pots)
+        delivery_occurred = self._correct_delivery_event(state)
 
         for agent_id in range(2):
-            s = self._compute_agent_shaping(agent_id, state, pot_events)
+            s = self._compute_agent_shaping(
+                agent_id, state, pot_events, delivery_occurred
+            )
             shaped[agent_id] += sum(s.values())
             prefix = f"agent{agent_id}_"
             for k, v in s.items():
@@ -155,20 +162,12 @@ class RewardShaper:
         return pos
 
     def _correct_delivery_event(self, state):
+        # Only credit if served counter actually increased
         served_curr = getattr(state, "served", None)
         served_prev = getattr(self.prev_state, "served", None)
         if isinstance(served_curr, int) and isinstance(served_prev, int):
             return int(served_curr == served_prev + 1)
-        serving = self._serving_positions()
-        for aid in range(2):
-            p, pp = state.players[aid], self.prev_state.players[aid]
-            if (
-                pp.held_object
-                and getattr(pp.held_object, "name", "") == "soup"
-                and p.held_object is None
-            ):
-                if any(_manhattan(p.position, s) == 1 for s in serving):
-                    return 1
+        # No fallback—if served counter unavailable, no credit
         return 0
 
     def _waste_event(self, state):
@@ -191,7 +190,7 @@ class RewardShaper:
                 return 0 if any(_manhattan(p.position, s) == 1 for s in serving) else 1
         return 0
 
-    def _compute_agent_shaping(self, agent_id, state, pot_events):
+    def _compute_agent_shaping(self, agent_id, state, pot_events, delivery_occurred):
         w = self.shape_weights
         s = {
             "onion_in_pot": 0.0,
@@ -206,19 +205,24 @@ class RewardShaper:
 
         # Team pot events
         if pot_events["onion_added"] > 0:
-            s["onion_in_pot"] = float(w.get("onion_in_pot", 0.01))
+            s["onion_in_pot"] = float(w.get("onion_in_pot", 0.05))
         if pot_events["cooking_started"] > 0:
-            s["cooking_start"] = float(w.get("cooking_start", 0.05))
-        if pot_events["soup_ready"] > 0:
-            s["soup_ready"] = float(w.get("soup_ready", 0.10))
+            s["cooking_start"] = float(w.get("cooking_start", 0.15))
+        if (
+            pot_events["soup_ready"] > 0
+            and self.episode_shaping_budget["soup_ready"] > 0
+        ):
+            s["soup_ready"] = float(w.get("soup_ready", 0.30))
+            self.episode_shaping_budget["soup_ready"] -= 1
 
-        # Per-agent pickup/delivery/penalty
-        if prev_obj is None and curr_obj and getattr(curr_obj, "name", "") == "soup":
-            s["soup_pickup"] = float(w.get("soup_pickup", 0.02))
-        if self._correct_delivery_event(state):
-            s["correct_delivery"] = float(w.get("correct_delivery", 0.25))
+        # Team delivery (passed in, not re-checked per agent)
+        if delivery_occurred and self.episode_shaping_budget["correct_delivery"] > 0:
+            s["correct_delivery"] = float(w.get("correct_delivery", 0.50))
+            self.episode_shaping_budget["correct_delivery"] -= 1
+
+        # Per-agent penalty
         if self._waste_event(state):
-            s["penalty"] = -float(w.get("penalty_drop", 0.05))
+            s["penalty"] = -float(w.get("penalty_drop", 0.10))
 
         return s
 
