@@ -24,7 +24,7 @@ class HyperParams:
     num_layers = 2
 
     # Environment
-    obs_dim = 96
+    obs_dim = 98
     joint_obs_dim = 192
     action_dim = 6
     num_agents = 2
