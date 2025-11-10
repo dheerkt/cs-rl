@@ -51,7 +51,6 @@ class HyperParams:
     shape_cooking_start = 0.30
     shape_soup_ready = 0.40
     shape_correct_delivery = 0.50
-    shape_approach_serving = 0.01  # NEW
     shape_penalty_drop = 0.10
     shape_anneal_start = 0.7
     shape_anneal_end = 0.9
@@ -84,6 +83,5 @@ class HyperParams:
             "cooking_start": cls.shape_cooking_start * scale,
             "soup_ready": cls.shape_soup_ready * scale,
             "correct_delivery": cls.shape_correct_delivery * scale,
-            "approach_serving": cls.shape_approach_serving * scale,
             "penalty_drop": cls.shape_penalty_drop * scale,
         }

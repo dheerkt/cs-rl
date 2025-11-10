@@ -29,7 +29,6 @@ class RewardShaper:
             "cooking_start": 0,
             "soup_ready": 0,
             "correct_delivery": 0,
-            "approach_serving": 0,
             "penalty": 0,
         }
         self.soups_delivered_this_episode = 0
@@ -63,13 +62,11 @@ class RewardShaper:
             "agent0_cooking_start": 0.0,
             "agent0_soup_ready": 0.0,
             "agent0_correct_delivery": 0.0,
-            "agent0_approach_serving": 0.0,
             "agent0_penalty": 0.0,
             "agent1_onion_in_pot": 0.0,
             "agent1_cooking_start": 0.0,
             "agent1_soup_ready": 0.0,
             "agent1_correct_delivery": 0.0,
-            "agent1_approach_serving": 0.0,
             "agent1_penalty": 0.0,
         }
 
@@ -273,7 +270,6 @@ class RewardShaper:
             "cooking_start": 0.0,
             "soup_ready": 0.0,
             "correct_delivery": 0.0,
-            "approach_serving": 0.0,
             "penalty": 0.0,
         }
 
@@ -293,20 +289,6 @@ class RewardShaper:
         if delivery_occurred and self.episode_shaping_budget["correct_delivery"] > 0:
             s["correct_delivery"] = float(w.get("correct_delivery", 0.50))
             self.episode_shaping_budget["correct_delivery"] -= 1
-
-        # Spatial guidance: approach serving with soup
-        player = state.players[agent_id]
-        prev_player = self.prev_state.players[agent_id]
-        if player.held_object and getattr(player.held_object, "name", "") == "soup":
-            serving = self._serving_positions()
-            if serving:
-                curr_dist = min(_manhattan(player.position, s) for s in serving)
-                prev_dist = min(_manhattan(prev_player.position, s) for s in serving)
-                if curr_dist < prev_dist:
-                    s["approach_serving"] = 0.05
-                    print(
-                        f"[APPROACH_DEBUG] Agent {agent_id} moved closer to serving: {prev_dist}→{curr_dist}"
-                    )
 
         # Penalty
         if self._waste_event(state):
