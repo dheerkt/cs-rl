@@ -110,8 +110,8 @@ def train(args):
 
         # Episode rollout
         while not done:
-            o0 = np.concatenate([obs["both_agent_obs"], np.array([1.0, 0.0], dtype=np.float32)])
-            o1 = np.concatenate([obs["both_agent_obs"], np.array([0.0, 1.0], dtype=np.float32)])
+            o0 = np.concatenate([obs["both_agent_obs"][0], np.array([1.0, 0.0], dtype=np.float32)])
+            o1 = np.concatenate([obs["both_agent_obs"][1], np.array([0.0, 1.0], dtype=np.float32)])
             observations = [o0, o1]
 
             actions, log_probs, entropies, value, joint_obs = ppo.select_actions(
@@ -151,10 +151,9 @@ def train(args):
 
             # PPO update when buffer full
             if len(ppo.buffer) >= HyperParams.batch_size:
-                next_observations = [
-                    next_obs["both_agent_obs"][0],
-                    next_obs["both_agent_obs"][1],
-                ]
+                n0 = np.concatenate([next_obs["both_agent_obs"][0], np.array([1.0, 0.0], dtype=np.float32)])
+                n1 = np.concatenate([next_obs["both_agent_obs"][1], np.array([0.0, 1.0], dtype=np.float32)])
+                next_observations = [n0, n1]
                 last_update_stats = ppo.update(next_observations)
 
         # Log episode
