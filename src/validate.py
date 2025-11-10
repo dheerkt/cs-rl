@@ -105,13 +105,15 @@ def test_team_advantages(num_episodes=10):
         steps = 0
 
         while not done and steps < 50:
-            observations = [obs['both_agent_obs'][0], obs['both_agent_obs'][1]]
-            actions, log_probs, entropies, value = ppo.select_actions(observations)
+            # Add agent ID flags to match training code
+            o0 = np.concatenate([obs['both_agent_obs'][0], np.array([1.0, 0.0], dtype=np.float32)])
+            o1 = np.concatenate([obs['both_agent_obs'][1], np.array([0.0, 1.0], dtype=np.float32)])
+            observations = [o0, o1]
+            actions, log_probs, entropies, value, joint_obs = ppo.select_actions(observations)
 
             next_obs, rewards, done, info = env.step(actions)
 
             # Store in buffer
-            joint_obs = np.concatenate(observations)
             ppo.buffer.add(observations, joint_obs, actions, log_probs, rewards, value, done)
 
             obs = next_obs
@@ -119,7 +121,10 @@ def test_team_advantages(num_episodes=10):
 
     # Try to update (this will compute team advantages)
     try:
-        next_observations = [obs['both_agent_obs'][0], obs['both_agent_obs'][1]]
+        # Add agent ID flags to match training code
+        n0 = np.concatenate([obs['both_agent_obs'][0], np.array([1.0, 0.0], dtype=np.float32)])
+        n1 = np.concatenate([obs['both_agent_obs'][1], np.array([0.0, 1.0], dtype=np.float32)])
+        next_observations = [n0, n1]
         update_stats = ppo.update(next_observations)
 
         print(f"\n  Actor loss: {update_stats['actor_loss']:.4f}")

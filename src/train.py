@@ -78,6 +78,11 @@ def train(args):
 
     last_update_stats = None  # cache last update stats for logging
 
+    # Create reward shaper once (not each episode)
+    progress = 0.0
+    weights = HyperParams.get_shaped_reward_weights(progress)
+    shaper = RewardShaper(env, weights, args.layout, episode_count=start_episode)
+
     base_entropy = ppo.hp.entropy_coef
     for episode in range(start_episode, args.episodes):
         # Replace entropy schedule block
@@ -91,10 +96,11 @@ def train(args):
         obs = env.reset()
         state = env.state
 
-        # Reward shaper
+        # Update reward shaper for this episode
         progress = episode / args.episodes
         weights = HyperParams.get_shaped_reward_weights(progress)
-        shaper = RewardShaper(env, weights, args.layout)
+        shaper.shape_weights = weights
+        shaper.episode_count = episode
         shaper.reset(state)
 
         # Collaboration metrics

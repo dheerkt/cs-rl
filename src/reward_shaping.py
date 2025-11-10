@@ -7,6 +7,9 @@ from dataclasses import dataclass
 import numpy as np
 from configs.hyperparameters import HyperParams
 
+# Debug print control
+DEBUG_POT_EVENTS = False
+DEBUG_DELIVERY_EVENTS = False
 
 def _manhattan(a, b):
     return abs(a[0] - b[0]) + abs(a[1] - b[1])
@@ -32,6 +35,11 @@ class RewardShaper:
             "penalty": 0,
         }
         self.soups_delivered_this_episode = 0
+
+    def update_weights(self, new_weights, episode):
+        """Update shaping weights and episode count for annealing."""
+        self.shape_weights = new_weights
+        self.episode_count = episode
 
     def reset(self, state):
         self.initial_positions = tuple(p.position for p in state.players)
@@ -141,12 +149,20 @@ class RewardShaper:
 
     def _diff_pots_dict(self, prev, curr):
         events = {"onion_added": 0, "cooking_started": 0, "soup_ready": 0}
+        
         for pos in curr.keys():
             if pos not in prev:
+                # New pot appeared with items already in it
+                if curr[pos]["num_items"] > 0:
+                    events["onion_added"] += curr[pos]["num_items"]
+                    if DEBUG_POT_EVENTS:
+                        print(f"[POT_DEBUG] ✓ onion_added {curr[pos]['num_items']} at new pot {pos}")
                 continue
+            
             p, c = prev[pos], curr[pos]
-
-            if (
+            
+            # Debug: Show all state changes
+            if DEBUG_POT_EVENTS and (
                 c["num_items"] != p["num_items"]
                 or c["is_cooking"] != p["is_cooking"]
                 or c["is_ready"] != p["is_ready"]
@@ -155,15 +171,34 @@ class RewardShaper:
                     f"[POT_DEBUG] {pos}: items {p['num_items']}→{c['num_items']}, cooking {p['is_cooking']}→{c['is_cooking']}, ready {p['is_ready']}→{c['is_ready']}"
                 )
 
-            if c["num_items"] == p["num_items"] + 1:
-                events["onion_added"] += 1
-                print(f"[POT_DEBUG] ✓ onion_added at {pos}")
-            if not p["is_cooking"] and c["is_cooking"] and c["num_items"] >= 3:
-                events["cooking_started"] += 1
-                print(f"[POT_DEBUG] ✓ cooking_started at {pos}")
+            # Check if soup became ready (special case for missing onions)
             if not p["is_ready"] and c["is_ready"]:
                 events["soup_ready"] += 1
-                print(f"[POT_DEBUG] ✓ soup_ready at {pos}")
+                if DEBUG_POT_EVENTS:
+                    print(f"[POT_DEBUG] ✓ soup_ready at {pos}")
+                
+                # Consumption case: infer missing onions to reach total of 3
+                # This handles 2→0+ready where the 3rd onion addition was missed
+                total_onions_needed = 3
+                onions_to_infer = total_onions_needed - p["num_items"]
+                if onions_to_infer > 0:
+                    events["onion_added"] += onions_to_infer
+                    if DEBUG_POT_EVENTS:
+                        print(f"[POT_DEBUG] ✓ onion_added {onions_to_infer} (inferred to reach 3 total) at {pos}")
+            else:
+                # Normal case: track incremental additions when soup not becoming ready
+                items_added = c["num_items"] - p["num_items"]
+                if items_added > 0:
+                    events["onion_added"] += items_added
+                    if DEBUG_POT_EVENTS:
+                        print(f"[POT_DEBUG] ✓ onion_added {items_added} at {pos}")
+            
+            # Cooking started
+            if not p["is_cooking"] and c["is_cooking"]:
+                events["cooking_started"] += 1
+                if DEBUG_POT_EVENTS:
+                    print(f"[POT_DEBUG] ✓ cooking_started at {pos}")
+        
         return events
 
     def _serving_positions(self):
