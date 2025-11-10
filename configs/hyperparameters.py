@@ -47,11 +47,11 @@ class HyperParams:
     }
 
     # Reward shaping
-    shape_onion_in_pot = 0.15
-    shape_cooking_start = 0.25
-    shape_soup_ready = 0.30
+    shape_onion_in_pot = 0.25
+    shape_cooking_start = 0.30
+    shape_soup_ready = 0.40
     shape_correct_delivery = 0.50
-    shape_approach_serving = 0.05  # NEW
+    shape_approach_serving = 0.01  # NEW
     shape_penalty_drop = 0.10
     shape_anneal_start = 0.7
     shape_anneal_end = 0.9
