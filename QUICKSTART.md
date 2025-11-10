@@ -1,6 +1,8 @@
 # Quick Start Guide
 
-**Git Commit Hash:** `9a15c05` (include this in your report!)
+**Git Commit Hash:** `f3cdf58` (include this in your report!)
+
+**CRITICAL:** This version includes essential bug fixes for agent-swap and team-advantage computation. Training with the previous version would fail!
 
 ## What You Have
 
@@ -28,6 +30,23 @@ pip install -r requirements.txt
 ### 3. Verify installation
 ```bash
 python -c "import overcooked_ai_py; import torch; print('✓ All dependencies installed')"
+```
+
+### 4. **IMPORTANT: Run Validation First!**
+```bash
+python src/validate.py
+```
+
+This tests critical bug fixes (agent-swap, team-advantage, seeding).
+**All tests must pass before training!** If any fail, something is broken.
+
+Expected output:
+```
+✅ PASS: swap_caching
+✅ PASS: team_advantages
+✅ PASS: shaped_rewards
+✅ PASS: determinism
+🎉 ALL TESTS PASSED - Safe to start training!
 ```
 
 ## Training (Main Task)
