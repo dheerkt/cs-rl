@@ -187,7 +187,7 @@ class RewardShaper:
         return shaping
 
     def _onion_placed_in_pot(self, prev_obj, current_obj, state):
-        """Check if agent just placed an onion in a pot"""
+        """Check if agent just placed an onion in a pot (IMPROVED with state diff)"""
         # Agent was holding onion, now not holding it
         if prev_obj is None or current_obj is not None:
             return False
@@ -195,11 +195,20 @@ class RewardShaper:
         if prev_obj.name != 'onion':
             return False
 
-        # Check if any pot gained an onion
-        for pot_state in state.objects.values():
-            if hasattr(pot_state, 'name') and 'soup' in pot_state.name:
-                # Pot exists - this is a simplified check
-                # In practice, you'd compare pot states before/after
+        # IMPROVED: Actually compare pot states before/after
+        prev_pots = self._get_pot_states(self.prev_state)
+        current_pots = self._get_pot_states(state)
+
+        # Check if any pot gained an ingredient
+        for pot_pos in current_pots:
+            if pot_pos not in prev_pots:
+                continue
+
+            prev_num = prev_pots[pot_pos].get('num_items', 0)
+            curr_num = current_pots[pot_pos].get('num_items', 0)
+
+            # Pot gained exactly 1 ingredient
+            if curr_num == prev_num + 1:
                 return True
 
         return False
@@ -261,7 +270,7 @@ class RewardShaper:
 
     def _get_pot_states(self, state):
         """
-        Extract pot states from environment state
+        Extract pot states from environment state (IMPROVED)
 
         Returns:
             Dictionary mapping pot positions to pot info
@@ -271,11 +280,23 @@ class RewardShaper:
         # Iterate through objects in state
         if hasattr(state, 'objects'):
             for pos, obj in state.objects.items():
-                if hasattr(obj, 'name') and 'soup' in str(obj).lower():
+                # Check if this is a pot/soup object
+                obj_name = getattr(obj, 'name', '')
+                if 'soup' in str(obj_name).lower() or 'pot' in str(obj_name).lower():
+                    # Extract detailed pot state
+                    num_items = 0
+                    if hasattr(obj, 'ingredients'):
+                        num_items = len(obj.ingredients)
+                    elif hasattr(obj, '_ingredients'):
+                        num_items = len(obj._ingredients)
+                    elif hasattr(obj, 'num_items'):
+                        num_items = obj.num_items
+
                     pots[pos] = {
-                        'is_cooking': hasattr(obj, 'is_cooking') and obj.is_cooking,
-                        'is_ready': hasattr(obj, 'is_ready') and obj.is_ready,
-                        'num_items': len(obj.ingredients) if hasattr(obj, 'ingredients') else 0,
+                        'is_cooking': getattr(obj, 'is_cooking', False) or getattr(obj, '_cooking', False),
+                        'is_ready': getattr(obj, 'is_ready', False) or getattr(obj, '_ready', False),
+                        'num_items': num_items,
+                        'position': pos,
                     }
 
         return pots

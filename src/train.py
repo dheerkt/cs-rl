@@ -16,7 +16,7 @@ from overcooked_ai_py.mdp.overcooked_env import OvercookedEnv
 from models import ActorNetwork, CentralizedCritic
 from ppo import PPO
 from reward_shaping import RewardShaper
-from utils import Logger, save_checkpoint, print_training_stats
+from utils import Logger, CollaborationMetrics, save_checkpoint, print_training_stats
 from configs.hyperparameters import HyperParams
 
 
@@ -131,6 +131,10 @@ def train(args):
         reward_shaper = RewardShaper(env, shape_weights)
         reward_shaper.reset(state)
 
+        # Initialize collaboration metrics tracker
+        collab_metrics = CollaborationMetrics()
+        collab_metrics.reset()
+
         # Episode statistics
         episode_reward = 0
         episode_length = 0
@@ -138,9 +142,8 @@ def train(args):
         done = False
 
         # Tracking for collaboration metrics
-        pot_states = {}
         idle_time = [0, 0]
-        last_actions = [None, None]
+        prev_state = state
 
         # Episode rollout
         while not done:
@@ -158,6 +161,9 @@ def train(args):
             # Step environment
             next_obs, sparse_rewards, done, info = env.step(actions)
             next_state = env.state
+
+            # Update collaboration metrics
+            collab_metrics.update(next_state, prev_state, actions)
 
             # Apply reward shaping with agent-index swap correction
             shaped_rewards, shaping_info = reward_shaper.compute_shaped_rewards(
@@ -177,6 +183,7 @@ def train(args):
             )
 
             # Update state
+            prev_state = state
             obs = next_obs
             state = next_state
             episode_reward += sum(shaped_rewards)
@@ -188,10 +195,12 @@ def train(args):
                 update_stats = ppo.update(next_observations)
                 logger.log_update(update_stats)
 
-        # Log episode
+        # Log episode with collaboration metrics
+        episode_collab_metrics = collab_metrics.get_episode_metrics()
         collab_info = {
             'idle_time_agent0': idle_time[0] / episode_length if episode_length > 0 else 0,
             'idle_time_agent1': idle_time[1] / episode_length if episode_length > 0 else 0,
+            'pot_handoffs': episode_collab_metrics['pot_handoffs'],
         }
         logger.log_episode(episode + 1, episode_reward, num_soups, episode_length, collab_info)
 

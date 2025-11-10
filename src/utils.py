@@ -10,6 +10,115 @@ from collections import deque
 import matplotlib.pyplot as plt
 
 
+class CollaborationMetrics:
+    """
+    Tracks collaboration metrics between agents
+    Specifically: pot handoffs (agents working on same pot)
+    """
+
+    def __init__(self):
+        """Initialize collaboration metrics tracker"""
+        self.pot_last_interactor = {}  # pot_position -> agent_id
+        self.handoffs_this_episode = 0
+        self.total_handoffs = 0
+
+    def reset(self):
+        """Reset for new episode"""
+        self.pot_last_interactor.clear()
+        self.handoffs_this_episode = 0
+
+    def update(self, state, prev_state, agent_actions):
+        """
+        Update metrics based on state transition
+
+        Args:
+            state: Current environment state
+            prev_state: Previous environment state
+            agent_actions: List of actions taken [action0, action1]
+        """
+        from configs.hyperparameters import HyperParams
+
+        # Get pot states
+        pots = self._get_pot_info(state)
+        prev_pots = self._get_pot_info(prev_state)
+
+        # Check each pot for changes indicating interaction
+        for pot_pos, pot_info in pots.items():
+            if pot_pos not in prev_pots:
+                continue
+
+            prev_info = prev_pots[pot_pos]
+
+            # Detect if pot state changed (someone interacted with it)
+            pot_changed = (
+                pot_info['num_items'] != prev_info['num_items'] or
+                pot_info['is_cooking'] != prev_info['is_cooking'] or
+                pot_info['is_ready'] != prev_info['is_ready']
+            )
+
+            if not pot_changed:
+                continue
+
+            # Determine which agent likely caused the change
+            # Agent must be adjacent and have taken an INTERACT action
+            interacting_agent = None
+
+            for agent_id in range(2):
+                agent_pos = state.players[agent_id].position
+                action = agent_actions[agent_id]
+
+                # Check if agent is adjacent to pot and interacted
+                if action == HyperParams.ACTION_INTERACT:
+                    distance = abs(agent_pos[0] - pot_pos[0]) + abs(agent_pos[1] - pot_pos[1])
+                    if distance == 1:  # Adjacent (Manhattan distance = 1)
+                        interacting_agent = agent_id
+                        break
+
+            if interacting_agent is None:
+                continue
+
+            # Check if this is a handoff (different agent than last interaction)
+            if pot_pos in self.pot_last_interactor:
+                last_agent = self.pot_last_interactor[pot_pos]
+                if last_agent != interacting_agent:
+                    # Handoff detected!
+                    self.handoffs_this_episode += 1
+                    self.total_handoffs += 1
+
+            # Update last interactor
+            self.pot_last_interactor[pot_pos] = interacting_agent
+
+    def get_episode_metrics(self):
+        """Get metrics for current episode"""
+        return {
+            'pot_handoffs': self.handoffs_this_episode,
+        }
+
+    def _get_pot_info(self, state):
+        """Extract pot information from state"""
+        pots = {}
+
+        if hasattr(state, 'objects'):
+            for pos, obj in state.objects.items():
+                obj_name = getattr(obj, 'name', '')
+                if 'soup' in str(obj_name).lower() or 'pot' in str(obj_name).lower():
+                    num_items = 0
+                    if hasattr(obj, 'ingredients'):
+                        num_items = len(obj.ingredients)
+                    elif hasattr(obj, '_ingredients'):
+                        num_items = len(obj._ingredients)
+                    elif hasattr(obj, 'num_items'):
+                        num_items = obj.num_items
+
+                    pots[pos] = {
+                        'is_cooking': getattr(obj, 'is_cooking', False) or getattr(obj, '_cooking', False),
+                        'is_ready': getattr(obj, 'is_ready', False) or getattr(obj, '_ready', False),
+                        'num_items': num_items,
+                    }
+
+        return pots
+
+
 class Logger:
     """
     Simple logger for tracking training metrics
