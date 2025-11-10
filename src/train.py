@@ -80,8 +80,10 @@ def train(args):
 
     base_entropy = ppo.hp.entropy_coef
     for episode in range(start_episode, args.episodes):
-        # Entropy schedule: 1.5× for first 5k episodes
-        if episode < 5000:
+        # Replace entropy schedule block
+        if episode < 15000:
+            ppo.hp.entropy_coef = base_entropy * 2.5
+        elif episode < 20000:
             ppo.hp.entropy_coef = base_entropy * 1.5
         else:
             ppo.hp.entropy_coef = base_entropy

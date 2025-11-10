@@ -1,6 +1,6 @@
 # reward_shaping.py
 """
-Reward shaping for Overcooked - Team-based pot events, per-agent pickups/drops.
+Reward shaping for Overcooked - Exploit-proof with bootstrap gating and spatial guidance.
 """
 
 from dataclasses import dataclass
@@ -17,6 +17,7 @@ class RewardShaper:
     env: object
     shape_weights: dict
     layout_name: str
+    episode_count: int = 0  # Track global episode for bootstrap gating
 
     def __post_init__(self):
         self.initial_positions = None
@@ -26,23 +27,28 @@ class RewardShaper:
         self.event_counts = {
             "onion_in_pot": 0,
             "cooking_start": 0,
-            "soup_pickup": 0,
             "soup_ready": 0,
             "correct_delivery": 0,
+            "approach_serving": 0,
             "penalty": 0,
         }
+        self.soups_delivered_this_episode = 0
 
     def reset(self, state):
         self.initial_positions = tuple(p.position for p in state.players)
         self.swapped = self._detect_swap_at_reset(state)
         self.prev_pots = self._get_pot_states(state)
         self.prev_state = state
-        self.episode_shaping_budget = {
-            "soup_ready": 10,
-            "correct_delivery": 10,  # max credits per episode
-        }
+        self.episode_shaping_budget = {"soup_ready": 10, "correct_delivery": 10}
+        self.soups_delivered_this_episode = 0
         for k in self.event_counts:
             self.event_counts[k] = 0
+
+        # Debug: print serving positions once
+        serving = self._serving_positions()
+        if not hasattr(self, "_serving_debug_printed"):
+            print(f"[RESET_DEBUG] Serving positions: {serving}")
+            self._serving_debug_printed = True
 
     def compute_shaped_rewards(self, state, sparse_rewards, done):
         if self.prev_state is None:
@@ -55,22 +61,21 @@ class RewardShaper:
         info = {
             "agent0_onion_in_pot": 0.0,
             "agent0_cooking_start": 0.0,
-            "agent0_soup_pickup": 0.0,
             "agent0_soup_ready": 0.0,
             "agent0_correct_delivery": 0.0,
+            "agent0_approach_serving": 0.0,
             "agent0_penalty": 0.0,
             "agent1_onion_in_pot": 0.0,
             "agent1_cooking_start": 0.0,
-            "agent1_soup_pickup": 0.0,
             "agent1_soup_ready": 0.0,
             "agent1_correct_delivery": 0.0,
+            "agent1_approach_serving": 0.0,
             "agent1_penalty": 0.0,
         }
 
-        # Compute pot events and delivery once per step (team events)
         curr_pots = self._get_pot_states(state)
         pot_events = self._diff_pots_dict(self.prev_pots, curr_pots)
-        delivery_occurred = self._correct_delivery_event(state)
+        delivery_occurred = self._correct_delivery_event(state, sparse_rewards)
 
         for agent_id in range(2):
             s = self._compute_agent_shaping(
@@ -143,12 +148,25 @@ class RewardShaper:
             if pos not in prev:
                 continue
             p, c = prev[pos], curr[pos]
+
+            if (
+                c["num_items"] != p["num_items"]
+                or c["is_cooking"] != p["is_cooking"]
+                or c["is_ready"] != p["is_ready"]
+            ):
+                print(
+                    f"[POT_DEBUG] {pos}: items {p['num_items']}→{c['num_items']}, cooking {p['is_cooking']}→{c['is_cooking']}, ready {p['is_ready']}→{c['is_ready']}"
+                )
+
             if c["num_items"] == p["num_items"] + 1:
                 events["onion_added"] += 1
+                print(f"[POT_DEBUG] ✓ onion_added at {pos}")
             if not p["is_cooking"] and c["is_cooking"] and c["num_items"] >= 3:
                 events["cooking_started"] += 1
+                print(f"[POT_DEBUG] ✓ cooking_started at {pos}")
             if not p["is_ready"] and c["is_ready"]:
                 events["soup_ready"] += 1
+                print(f"[POT_DEBUG] ✓ soup_ready at {pos}")
         return events
 
     def _serving_positions(self):
@@ -161,24 +179,80 @@ class RewardShaper:
                         pos.append((x, y))
         return pos
 
-    def _correct_delivery_event(self, state):
-        # Only credit if served counter actually increased
-        served_curr = getattr(state, "served", None)
-        served_prev = getattr(self.prev_state, "served", None)
-        if isinstance(served_curr, int) and isinstance(served_prev, int):
-            return int(served_curr == served_prev + 1)
-        # No fallback—if served counter unavailable, no credit
+    def _correct_delivery_event(self, state, sparse_rewards):
+        """Bootstrap gating: position-based until ep 10k, then strict sparse reward gate."""
+        base = self._coerce_rewards(sparse_rewards)
+        total_sparse = sum(base)
+
+        # Cap deliveries per episode
+        if self.soups_delivered_this_episode >= 10:
+            print(f"[DELIVERY_DEBUG] ✗ Delivery cap (10) reached this episode")
+            return 0
+
+        serving = self._serving_positions()
+
+        # Bootstrap phase (first 10k episodes): accept position-based
+        if self.episode_count < 10000:
+            for aid in range(2):
+                p, pp = state.players[aid], self.prev_state.players[aid]
+                prev_held = (
+                    getattr(pp.held_object, "name", None) if pp.held_object else None
+                )
+                curr_held = (
+                    getattr(p.held_object, "name", None) if p.held_object else None
+                )
+
+                if prev_held == "soup" and curr_held is None:
+                    dist_to_serving = [_manhattan(p.position, s) for s in serving]
+                    min_dist = min(dist_to_serving) if dist_to_serving else 999
+                    print(
+                        f"[DELIVERY_DEBUG] Agent {aid} dropped soup at {p.position}, min_dist: {min_dist} (bootstrap phase)"
+                    )
+
+                    if min_dist <= 2:
+                        self.soups_delivered_this_episode += 1
+                        print(
+                            f"[DELIVERY_DEBUG] ✓ Delivery #{self.soups_delivered_this_episode} (position-based)"
+                        )
+                        return 1
+            return 0
+
+        # Strict phase (after 10k): require sparse reward
+        if total_sparse < 15.0:
+            return 0
+
+        for aid in range(2):
+            p, pp = state.players[aid], self.prev_state.players[aid]
+            prev_held = (
+                getattr(pp.held_object, "name", None) if pp.held_object else None
+            )
+            curr_held = getattr(p.held_object, "name", None) if p.held_object else None
+
+            if prev_held == "soup" and curr_held is None:
+                dist_to_serving = [_manhattan(p.position, s) for s in serving]
+                min_dist = min(dist_to_serving) if dist_to_serving else 999
+                print(
+                    f"[DELIVERY_DEBUG] Agent {aid} dropped soup at {p.position}, min_dist: {min_dist}, sparse: {total_sparse:.1f}"
+                )
+
+                if min_dist <= 2:
+                    self.soups_delivered_this_episode += 1
+                    print(
+                        f"[DELIVERY_DEBUG] ✓ Delivery #{self.soups_delivered_this_episode} (verified)"
+                    )
+                    return 1
+                else:
+                    print(
+                        f"[DELIVERY_DEBUG] ⚠ Sparse reward but position check failed (dist={min_dist})"
+                    )
+
+        if total_sparse >= 15.0:
+            print(
+                f"[DELIVERY_DEBUG] ⚠ Sparse {total_sparse:.1f} but no soup drop observed"
+            )
         return 0
 
     def _waste_event(self, state):
-        served_curr = getattr(state, "served", None)
-        served_prev = getattr(self.prev_state, "served", None)
-        if (
-            isinstance(served_curr, int)
-            and isinstance(served_prev, int)
-            and served_curr == served_prev + 1
-        ):
-            return 0
         serving = self._serving_positions()
         for aid in range(2):
             p, pp = state.players[aid], self.prev_state.players[aid]
@@ -187,7 +261,9 @@ class RewardShaper:
                 and getattr(pp.held_object, "name", "") == "soup"
                 and p.held_object is None
             ):
-                return 0 if any(_manhattan(p.position, s) == 1 for s in serving) else 1
+                if not any(_manhattan(p.position, s) <= 2 for s in serving):
+                    print(f"[DELIVERY_DEBUG] ✗ Agent {aid} wasted soup at {p.position}")
+                    return 1
         return 0
 
     def _compute_agent_shaping(self, agent_id, state, pot_events, delivery_occurred):
@@ -195,13 +271,11 @@ class RewardShaper:
         s = {
             "onion_in_pot": 0.0,
             "cooking_start": 0.0,
-            "soup_pickup": 0.0,
             "soup_ready": 0.0,
             "correct_delivery": 0.0,
+            "approach_serving": 0.0,
             "penalty": 0.0,
         }
-        player, prev_player = state.players[agent_id], self.prev_state.players[agent_id]
-        curr_obj, prev_obj = player.held_object, prev_player.held_object
 
         # Team pot events
         if pot_events["onion_added"] > 0:
@@ -215,12 +289,26 @@ class RewardShaper:
             s["soup_ready"] = float(w.get("soup_ready", 0.30))
             self.episode_shaping_budget["soup_ready"] -= 1
 
-        # Team delivery (passed in, not re-checked per agent)
+        # Team delivery
         if delivery_occurred and self.episode_shaping_budget["correct_delivery"] > 0:
             s["correct_delivery"] = float(w.get("correct_delivery", 0.50))
             self.episode_shaping_budget["correct_delivery"] -= 1
 
-        # Per-agent penalty
+        # Spatial guidance: approach serving with soup
+        player = state.players[agent_id]
+        prev_player = self.prev_state.players[agent_id]
+        if player.held_object and getattr(player.held_object, "name", "") == "soup":
+            serving = self._serving_positions()
+            if serving:
+                curr_dist = min(_manhattan(player.position, s) for s in serving)
+                prev_dist = min(_manhattan(prev_player.position, s) for s in serving)
+                if curr_dist < prev_dist:
+                    s["approach_serving"] = 0.05
+                    print(
+                        f"[APPROACH_DEBUG] Agent {agent_id} moved closer to serving: {prev_dist}→{curr_dist}"
+                    )
+
+        # Penalty
         if self._waste_event(state):
             s["penalty"] = -float(w.get("penalty_drop", 0.10))
 
