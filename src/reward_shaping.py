@@ -292,81 +292,99 @@ class RewardShaper:
         return pos
 
     def _correct_delivery_event(self, state, sparse_rewards):
-        """Bootstrap gating: position-based until ep 40k, then strict sparse +20 gate."""
+        """
+        Three-phase delivery detection:
+        - Phase 1 (0-40k): Bootstrap with 2-tile radius
+        - Phase 2 (40k-45k): Semi-strict gradient (1-tile = 1x, exact = 3x)
+        - Phase 3 (45k+): Strict sparse-only (exact tile required)
+        """
         base = self._coerce_rewards(sparse_rewards)
         total_sparse = sum(base)
 
-        # Safety cap deliveries per episode (raised to 20 to avoid blocking legitimate learning)
+        # Safety cap deliveries per episode
         if self.soups_delivered_this_episode >= 20:
             print(f"[DELIVERY_DEBUG] ✗ Delivery cap (20) reached this episode")
             return 0
 
         serving = self._serving_positions()
 
-        # Bootstrap phase (first 40k episodes): accept position-based for re-exploration
+        # Phase 1: Bootstrap (0-40k episodes) - 2-tile radius
         if self.episode_count < 40000:
-            # Debug print mode change
             if self.episode_count % 1000 == 0 and not hasattr(self, f"_printed_bootstrap_{self.episode_count}"):
-                print(f"[DELIVERY_DEBUG] Episode {self.episode_count}: Using POSITION-BASED delivery detection (bootstrap mode)")
+                print(f"[DELIVERY_DEBUG] Episode {self.episode_count}: PHASE 1 - Bootstrap (2-tile radius)")
                 setattr(self, f"_printed_bootstrap_{self.episode_count}", True)
+            
             for aid in range(2):
                 p, pp = state.players[aid], self.prev_state.players[aid]
-                prev_held = (
-                    getattr(pp.held_object, "name", None) if pp.held_object else None
-                )
-                curr_held = (
-                    getattr(p.held_object, "name", None) if p.held_object else None
-                )
+                prev_held = getattr(pp.held_object, "name", None) if pp.held_object else None
+                curr_held = getattr(p.held_object, "name", None) if p.held_object else None
 
                 if prev_held == "soup" and curr_held is None:
                     dist_to_serving = [_manhattan(p.position, s) for s in serving]
                     min_dist = min(dist_to_serving) if dist_to_serving else 999
-                    print(
-                        f"[DELIVERY_DEBUG] Agent {aid} dropped soup at {p.position}, min_dist: {min_dist} (bootstrap phase)"
-                    )
 
                     if min_dist <= 2:
                         self.soups_delivered_this_episode += 1
-                        print(
-                            f"[DELIVERY_DEBUG] ✓ Delivery #{self.soups_delivered_this_episode} (position-based)"
-                        )
+                        print(f"[DELIVERY_DEBUG] ✓ Delivery #{self.soups_delivered_this_episode} at dist={min_dist} (bootstrap)")
                         return 1
             return 0
 
-        # Strict phase (after 40k): require sparse +20 reward ONLY
-        if total_sparse < 19.0:
+        # Phase 2: Semi-strict gradient (40k-45k episodes)
+        elif self.episode_count < 45000:
+            if self.episode_count % 1000 == 0 and not hasattr(self, f"_printed_semistrict_{self.episode_count}"):
+                print(f"[DELIVERY_DEBUG] Episode {self.episode_count}: PHASE 2 - Semi-strict gradient (1-tile=1x, exact=3x)")
+                setattr(self, f"_printed_semistrict_{self.episode_count}", True)
+            
+            for aid in range(2):
+                p, pp = state.players[aid], self.prev_state.players[aid]
+                prev_held = getattr(pp.held_object, "name", None) if pp.held_object else None
+                curr_held = getattr(p.held_object, "name", None) if p.held_object else None
+
+                if prev_held == "soup" and curr_held is None:
+                    dist_to_serving = [_manhattan(p.position, s) for s in serving]
+                    min_dist = min(dist_to_serving) if dist_to_serving else 999
+                    
+                    # Check for exact tile (sparse reward present)
+                    if total_sparse >= 19.0 and min_dist <= 1:
+                        self.soups_delivered_this_episode += 1
+                        print(f"[DELIVERY_DEBUG] ✓✓✓ EXACT delivery #{self.soups_delivered_this_episode} (3x bonus!)")
+                        return 3  # 3x reward for exact tile!
+                    
+                    # Check for 1-tile proximity
+                    elif min_dist <= 1:
+                        self.soups_delivered_this_episode += 1
+                        print(f"[DELIVERY_DEBUG] ✓ Close delivery #{self.soups_delivered_this_episode} at dist={min_dist} (1x)")
+                        return 1  # 1x reward for close
             return 0
 
-        for aid in range(2):
-            p, pp = state.players[aid], self.prev_state.players[aid]
-            prev_held = (
-                getattr(pp.held_object, "name", None) if pp.held_object else None
-            )
-            curr_held = getattr(p.held_object, "name", None) if p.held_object else None
+        # Phase 3: Strict (45k+ episodes) - exact tile only
+        else:
+            if self.episode_count % 1000 == 0 and not hasattr(self, f"_printed_strict_{self.episode_count}"):
+                print(f"[DELIVERY_DEBUG] Episode {self.episode_count}: PHASE 3 - Strict (exact tile only)")
+                setattr(self, f"_printed_strict_{self.episode_count}", True)
+            
+            if total_sparse < 19.0:
+                return 0
 
-            if prev_held == "soup" and curr_held is None:
-                dist_to_serving = [_manhattan(p.position, s) for s in serving]
-                min_dist = min(dist_to_serving) if dist_to_serving else 999
-                print(
-                    f"[DELIVERY_DEBUG] Agent {aid} dropped soup at {p.position}, min_dist: {min_dist}, sparse: {total_sparse:.1f}"
-                )
+            for aid in range(2):
+                p, pp = state.players[aid], self.prev_state.players[aid]
+                prev_held = getattr(pp.held_object, "name", None) if pp.held_object else None
+                curr_held = getattr(p.held_object, "name", None) if p.held_object else None
 
-                if min_dist <= 2:
-                    self.soups_delivered_this_episode += 1
-                    print(
-                        f"[DELIVERY_DEBUG] ✓ Delivery #{self.soups_delivered_this_episode} (verified)"
-                    )
-                    return 1
-                else:
-                    print(
-                        f"[DELIVERY_DEBUG] ⚠ Sparse reward but position check failed (dist={min_dist})"
-                    )
+                if prev_held == "soup" and curr_held is None:
+                    dist_to_serving = [_manhattan(p.position, s) for s in serving]
+                    min_dist = min(dist_to_serving) if dist_to_serving else 999
 
-        if total_sparse >= 15.0:
-            print(
-                f"[DELIVERY_DEBUG] ⚠ Sparse {total_sparse:.1f} but no soup drop observed"
-            )
-        return 0
+                    if min_dist <= 1:
+                        self.soups_delivered_this_episode += 1
+                        print(f"[DELIVERY_DEBUG] ✓ Exact delivery #{self.soups_delivered_this_episode} (strict phase)")
+                        return 1
+                    else:
+                        print(f"[DELIVERY_DEBUG] ⚠ Sparse reward but dist={min_dist} > 1")
+
+            if total_sparse >= 19.0:
+                print(f"[DELIVERY_DEBUG] ⚠ Sparse {total_sparse:.1f} but no valid drop observed")
+            return 0
 
     def _waste_event(self, state):
         serving = self._serving_positions()
