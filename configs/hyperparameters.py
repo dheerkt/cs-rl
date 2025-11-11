@@ -52,7 +52,7 @@ class HyperParams:
     shape_soup_ready = 0.40
     shape_soup_pickup = 0.35
     shape_correct_delivery = 0.50
-    shape_approach_serving = 0.02
+    shape_approach_serving = 0.2  # Increased 10x (was 0.02) for stronger serving guidance during kick
     shape_penalty_drop = 0.10  # Reduced back to 0.10 - pot exploit fixed, need exploration room
     shape_anneal_start = 0.4  # Aggressive: start fade at 40% (was 70%)
     shape_anneal_end = 0.7    # Near-zero by 70% (was 90%)

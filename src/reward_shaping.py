@@ -292,7 +292,7 @@ class RewardShaper:
         return pos
 
     def _correct_delivery_event(self, state, sparse_rewards):
-        """Bootstrap gating: position-based until ep 5k, then strict sparse +20 gate."""
+        """Bootstrap gating: position-based until ep 40k, then strict sparse +20 gate."""
         base = self._coerce_rewards(sparse_rewards)
         total_sparse = sum(base)
 
@@ -303,8 +303,12 @@ class RewardShaper:
 
         serving = self._serving_positions()
 
-        # Bootstrap phase (first 5k episodes): accept position-based for early exploration
-        if self.episode_count < 5000:
+        # Bootstrap phase (first 40k episodes): accept position-based for re-exploration
+        if self.episode_count < 40000:
+            # Debug print mode change
+            if self.episode_count % 1000 == 0 and not hasattr(self, f"_printed_bootstrap_{self.episode_count}"):
+                print(f"[DELIVERY_DEBUG] Episode {self.episode_count}: Using POSITION-BASED delivery detection (bootstrap mode)")
+                setattr(self, f"_printed_bootstrap_{self.episode_count}", True)
             for aid in range(2):
                 p, pp = state.players[aid], self.prev_state.players[aid]
                 prev_held = (
