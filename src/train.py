@@ -87,13 +87,13 @@ def train(args):
     for episode in range(start_episode, args.episodes):
         # Universal entropy schedule for all layouts
         if episode < 25000:
-            ppo.hp.entropy_coef = base_entropy * 4.0
+            ppo.hp.entropy_coef = base_entropy * 6
         elif episode < 35000:
-            ppo.hp.entropy_coef = base_entropy * 4.0
+            ppo.hp.entropy_coef = base_entropy * 5
         elif episode < 40000:
-            ppo.hp.entropy_coef = base_entropy * 3.75
+            ppo.hp.entropy_coef = base_entropy * 4.5
         elif episode < 45000:
-            ppo.hp.entropy_coef = base_entropy * 2.0
+            ppo.hp.entropy_coef = base_entropy * 3
         else:
             ppo.hp.entropy_coef = base_entropy
 
