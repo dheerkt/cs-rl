@@ -43,6 +43,9 @@ class RewardShaper:
         self._credited_ready_pots = set()
         # Flicker protection: track pot positions credited this episode
         self._pots_credited_this_episode = set()
+        # Approach serving tracking: one-time nudge per carried soup
+        self._carried_soup_ids = [None, None]           # Track current soup ID per agent
+        self._approach_credit_given = [True, True]      # Whether nudge given for current soup
 
     def update_weights(self, new_weights, episode):
         """Update shaping weights and episode count for annealing."""
@@ -62,6 +65,9 @@ class RewardShaper:
         self._credited_ready_pots.clear()
         # Reset flicker protection for new episode
         self._pots_credited_this_episode.clear()
+        # Reset approach serving tracking for new episode
+        self._carried_soup_ids = [None, None]
+        self._approach_credit_given = [True, True]
         for k in self.event_counts:
             self.event_counts[k] = 0
 
@@ -85,12 +91,14 @@ class RewardShaper:
             "agent0_soup_ready": 0.0,
             "agent0_soup_pickup": 0.0,
             "agent0_correct_delivery": 0.0,
+            "agent0_approach_serving": 0.0,
             "agent0_penalty": 0.0,
             "agent1_onion_in_pot": 0.0,
             "agent1_cooking_start": 0.0,
             "agent1_soup_ready": 0.0,
             "agent1_soup_pickup": 0.0,
             "agent1_correct_delivery": 0.0,
+            "agent1_approach_serving": 0.0,
             "agent1_penalty": 0.0,
         }
 
@@ -114,6 +122,7 @@ class RewardShaper:
         self.event_counts["soup_ready"] += pot_events["soup_ready"]
 
         # Track per-agent pickup events (count actual pickups, not timesteps)
+        # Also track soup IDs for approach_serving credit
         for agent_id in range(2):
             p = state.players[agent_id]
             pp = self.prev_state.players[agent_id]
@@ -124,6 +133,13 @@ class RewardShaper:
                 soup_id = id(p.held_object) if p.held_object else None
                 if soup_id and soup_id not in self.picked_up_soups:
                     self.event_counts["soup_pickup"] += 1
+                # Track soup ID and enable approach nudge
+                self._carried_soup_ids[agent_id] = soup_id
+                self._approach_credit_given[agent_id] = False
+            elif prev_held == "soup" and curr_held is None:
+                # Drop/delivery: clear tracking
+                self._carried_soup_ids[agent_id] = None
+                self._approach_credit_given[agent_id] = True
 
         # Track delivery events (count actual deliveries, not timesteps)
         if delivery_occurred:
@@ -370,6 +386,7 @@ class RewardShaper:
             "soup_ready": 0.0,
             "soup_pickup": 0.0,
             "correct_delivery": 0.0,
+            "approach_serving": 0.0,
             "penalty": 0.0,
         }
 
@@ -396,6 +413,16 @@ class RewardShaper:
                     print(f"[POT_DEBUG] ✓ soup_pickup by agent {agent_id} (soup_id: {soup_id})")
             elif soup_id in self.picked_up_soups and DEBUG_POT_EVENTS:
                 print(f"[POT_DEBUG] ⚠ soup already picked up (soup_id: {soup_id})")
+
+        # One-time approach_serving nudge per carried soup
+        if p.held_object and getattr(p.held_object, "name", "") == "soup":
+            serving = self._serving_positions()
+            if serving and not self._approach_credit_given[agent_id]:
+                curr_dist = min(_manhattan(p.position, s_pos) for s_pos in serving)
+                prev_dist = min(_manhattan(pp.position, s_pos) for s_pos in serving)
+                if curr_dist < prev_dist:
+                    s["approach_serving"] = float(w.get("approach_serving", 0.0))
+                    self._approach_credit_given[agent_id] = True
 
         # Team delivery with ID tracking (prevents duplicate delivery credits)
         if delivery_occurred:
