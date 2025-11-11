@@ -330,7 +330,7 @@ class RewardShaper:
             return 0
 
         # Phase 2: Semi-strict gradient (40k-45k episodes)
-        elif self.episode_count < 45000:
+        elif self.episode_count < 52000:
             if self.episode_count % 1000 == 0 and not hasattr(self, f"_printed_semistrict_{self.episode_count}"):
                 print(f"[DELIVERY_DEBUG] Episode {self.episode_count}: PHASE 2 - Semi-strict gradient (1-tile=1x, exact=3x)")
                 setattr(self, f"_printed_semistrict_{self.episode_count}", True)
@@ -357,15 +357,12 @@ class RewardShaper:
                         return 1  # 1x reward for close
             return 0
 
-        # Phase 3: Strict (45k+ episodes) - exact tile only
+        # Phase 3: Modified strict (52k+ episodes) - exact tile + 1-radius proximity bonus
         else:
             if self.episode_count % 1000 == 0 and not hasattr(self, f"_printed_strict_{self.episode_count}"):
-                print(f"[DELIVERY_DEBUG] Episode {self.episode_count}: PHASE 3 - Strict (exact tile only)")
+                print(f"[DELIVERY_DEBUG] Episode {self.episode_count}: PHASE 3 - Modified strict (exact=1.0, 1-tile=0.2)")
                 setattr(self, f"_printed_strict_{self.episode_count}", True)
             
-            if total_sparse < 19.0:
-                return 0
-
             for aid in range(2):
                 p, pp = state.players[aid], self.prev_state.players[aid]
                 prev_held = getattr(pp.held_object, "name", None) if pp.held_object else None
@@ -374,16 +371,23 @@ class RewardShaper:
                 if prev_held == "soup" and curr_held is None:
                     dist_to_serving = [_manhattan(p.position, s) for s in serving]
                     min_dist = min(dist_to_serving) if dist_to_serving else 999
-
-                    if min_dist <= 1:
+                    
+                    # Exact tile (with sparse reward confirmation)
+                    if total_sparse >= 19.0 and min_dist == 0:
                         self.soups_delivered_this_episode += 1
-                        print(f"[DELIVERY_DEBUG] ✓ Exact delivery #{self.soups_delivered_this_episode} (strict phase)")
-                        return 1
-                    else:
-                        print(f"[DELIVERY_DEBUG] ⚠ Sparse reward but dist={min_dist} > 1")
+                        print(f"[DELIVERY_DEBUG] ✓✓ EXACT delivery #{self.soups_delivered_this_episode} (1.0 reward)")
+                        return 1.0
+                    
+                    # 1-tile proximity bonus (no sparse required)
+                    elif min_dist == 1:
+                        self.soups_delivered_this_episode += 1
+                        print(f"[DELIVERY_DEBUG] ✓ Close delivery #{self.soups_delivered_this_episode} at dist=1 (0.2 proximity bonus)")
+                        return 0.2
+                    
+                    # Too far
+                    elif min_dist > 1:
+                        print(f"[DELIVERY_DEBUG] ✗ Soup dropped at dist={min_dist} (too far, no reward)")
 
-            if total_sparse >= 19.0:
-                print(f"[DELIVERY_DEBUG] ⚠ Sparse {total_sparse:.1f} but no valid drop observed")
             return 0
 
     def _waste_event(self, state):
