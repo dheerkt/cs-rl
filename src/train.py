@@ -88,8 +88,10 @@ def train(args):
         # Universal entropy schedule for all layouts
         if episode < 25000:
             ppo.hp.entropy_coef = base_entropy * 6
-        elif episode < 35000:
-            ppo.hp.entropy_coef = base_entropy * 5
+        elif 35000 <= episode < 36500:  # Sharp re-exploration kick
+            ppo.hp.entropy_coef = base_entropy * 20.0
+            if episode % 100 == 0:
+                print(f"[ENTROPY_KICK] episode={episode} coef={ppo.hp.entropy_coef:.5f} target_entropy=1.0-1.3")
         elif episode < 40000:
             ppo.hp.entropy_coef = base_entropy * 4.5
         elif episode < 45000:
