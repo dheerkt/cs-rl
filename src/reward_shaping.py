@@ -124,7 +124,7 @@ class RewardShaper:
         # Compute shaped rewards for each agent
         for agent_id in range(2):
             s = self._compute_agent_shaping(
-                agent_id, state, pot_events, delivery_occurred
+                agent_id, state, curr_pots, pot_events, delivery_occurred
             )
             shaped[agent_id] += sum(s.values())
             prefix = f"agent{agent_id}_"
@@ -336,7 +336,7 @@ class RewardShaper:
                     return 1
         return 0
 
-    def _compute_agent_shaping(self, agent_id, state, pot_events, delivery_occurred):
+    def _compute_agent_shaping(self, agent_id, state, curr_pots, pot_events, delivery_occurred):
         w = self.shape_weights
         s = {
             "onion_in_pot": 0.0,

@@ -52,7 +52,7 @@ class HyperParams:
     shape_soup_ready = 0.40
     shape_soup_pickup = 0.35
     shape_correct_delivery = 0.50
-    shape_penalty_drop = 0.10
+    shape_penalty_drop = 0.50  # Increased from 0.10 to prevent pickup-drop exploit
     shape_anneal_start = 0.7
     shape_anneal_end = 0.9
 
