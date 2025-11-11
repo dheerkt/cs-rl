@@ -96,8 +96,10 @@ def evaluate(env, actors, num_episodes=100, device='cpu', verbose=True):
         idle_count = [0, 0]
 
         while not done:
-            # Get observations
-            observations = [obs['both_agent_obs'][0], obs['both_agent_obs'][1]]
+            # Get observations with agent ID flags (must match training!)
+            o0 = np.concatenate([obs['both_agent_obs'][0], np.array([1.0, 0.0], dtype=np.float32)])
+            o1 = np.concatenate([obs['both_agent_obs'][1], np.array([0.0, 1.0], dtype=np.float32)])
+            observations = [o0, o1]
 
             # Get actions (deterministic for evaluation)
             actions = []
