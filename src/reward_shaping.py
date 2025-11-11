@@ -333,7 +333,7 @@ class RewardShaper:
                         return 1
             return 0
 
-        # Strict phase (after 5k): require sparse +20 reward ONLY
+        # Strict phase (after 40k): require sparse +20 reward ONLY
         if total_sparse < 19.0:
             return 0
 
