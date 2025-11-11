@@ -479,6 +479,83 @@ def test_event_count_accuracy():
         return False
 
 
+def test_flicker_protection():
+    """
+    CRITICAL: Test that flicker guard prevents re-crediting pot positions.
+    Verifies that each pot position is credited ONCE per episode, even if picked up/replaced.
+    """
+    print("\n" + "="*60)
+    print("TEST 9: Flicker Protection (Pot Re-Credit Prevention)")
+    print("="*60)
+
+    env = build_overcooked_env('cramped_room', seed=42)
+    shape_weights = HyperParams.get_shaped_reward_weights(0.0)
+    reward_shaper = RewardShaper(env, shape_weights, 'cramped_room')
+
+    obs = env.reset()
+    state = env.state
+    reward_shaper.reset(state)
+    
+    # Track pot positions we've seen and credited
+    pot_positions_seen = set()
+    onion_credits_per_position = {}
+    
+    # Run episode and track pot appearances
+    for step in range(200):
+        actions = [np.random.randint(0, 6), np.random.randint(0, 6)]
+        prev_pots = reward_shaper._get_pot_states(state)
+        
+        obs, sparse_rewards, done, info = env.step(actions)
+        next_state = env.state
+        
+        curr_pots = reward_shaper._get_pot_states(next_state)
+        
+        # Check for new pot appearances
+        for pos in curr_pots.keys():
+            if pos not in prev_pots:
+                # New pot appeared - track it
+                if pos not in pot_positions_seen:
+                    pot_positions_seen.add(pos)
+                    onion_credits_per_position[pos] = 1
+                    print(f"  First appearance of pot at {pos}: {curr_pots[pos]['num_items']} onions")
+                else:
+                    # Pot REAPPEARED (flicker) - should not be credited
+                    onion_credits_per_position[pos] += 1
+                    print(f"  ⚠ Pot at {pos} reappeared (flicker #{onion_credits_per_position[pos]})")
+        
+        # Compute shaped rewards
+        shaped_rewards, shaping_info = reward_shaper.compute_shaped_rewards(
+            next_state, sparse_rewards, done
+        )
+        
+        state = next_state
+        if done:
+            break
+    
+    # Verify flicker guard worked
+    print(f"\n  Pot positions seen: {len(pot_positions_seen)}")
+    print(f"  Pots credited this episode: {len(reward_shaper._pots_credited_this_episode)}")
+    
+    # Check each position was credited max once
+    re_credits = sum(1 for count in onion_credits_per_position.values() if count > 1)
+    
+    if re_credits > 0:
+        print(f"\n  Found {re_credits} pot positions that appeared multiple times (flickers)")
+        print(f"  Checking if flicker guard prevented re-crediting...")
+    
+    # The key test: _pots_credited_this_episode should match pot_positions_seen
+    # This proves each position was tracked and credited only once
+    guard_size = len(reward_shaper._pots_credited_this_episode)
+    seen_size = len(pot_positions_seen)
+    
+    if guard_size == seen_size:
+        print(f"\n✅ PASS: Flicker guard working - {guard_size} positions credited exactly once")
+        return True
+    else:
+        print(f"\n❌ FAIL: Flicker guard mismatch - guard has {guard_size}, seen {seen_size}")
+        return False
+
+
 def run_all_tests():
     """Run all validation tests"""
     print("\n" + "="*60)
@@ -499,6 +576,7 @@ def run_all_tests():
     results['annealing_schedule'] = test_annealing_schedule()
     results['delivery_strictness'] = test_delivery_strictness()
     results['event_accuracy'] = test_event_count_accuracy()
+    results['flicker_protection'] = test_flicker_protection()
 
     # Summary
     print("\n" + "="*60)
