@@ -41,6 +41,8 @@ class RewardShaper:
         self.delivered_soups = set()
         # Pot tracking to prevent repeated inference credits
         self._credited_ready_pots = set()
+        # Flicker protection: track pot positions credited this episode
+        self._pots_credited_this_episode = set()
 
     def update_weights(self, new_weights, episode):
         """Update shaping weights and episode count for annealing."""
@@ -58,6 +60,8 @@ class RewardShaper:
         self.soups_delivered_this_episode = 0
         # Reset pot tracking to prevent repeated inference credits
         self._credited_ready_pots.clear()
+        # Reset flicker protection for new episode
+        self._pots_credited_this_episode.clear()
         for k in self.event_counts:
             self.event_counts[k] = 0
 
@@ -197,16 +201,21 @@ class RewardShaper:
         """
         Detect pot state changes using direct state transitions ONLY.
         NO inference - only credit exact +1 transitions per official Overcooked-AI style.
+        Flicker protection: credit pot initial contents ONCE per episode.
         """
         events = {"onion_added": 0, "cooking_started": 0, "soup_ready": 0}
         
         for pos in curr.keys():
             if pos not in prev:
-                # New pot appeared - credit items it starts with
-                if curr[pos]["num_items"] > 0:
-                    events["onion_added"] += curr[pos]["num_items"]
-                    if DEBUG_POT_EVENTS:
-                        print(f"[POT_DEBUG] ✓ onion_added {curr[pos]['num_items']} at new pot {pos}")
+                # New pot appeared - credit ONCE per episode to prevent flicker exploit
+                if pos not in self._pots_credited_this_episode:
+                    if curr[pos]["num_items"] > 0:
+                        events["onion_added"] += curr[pos]["num_items"]
+                        if DEBUG_POT_EVENTS:
+                            print(f"[POT_DEBUG] ✓ onion_added {curr[pos]['num_items']} at new pot {pos} (first seen this episode)")
+                    self._pots_credited_this_episode.add(pos)
+                elif DEBUG_POT_EVENTS:
+                    print(f"[POT_DEBUG] ⚠ pot at {pos} already credited this episode, skipping flicker")
                 continue
             
             p, c = prev[pos], curr[pos]
