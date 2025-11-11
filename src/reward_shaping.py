@@ -39,6 +39,8 @@ class RewardShaper:
         # Soup ID tracking to prevent pickup-drop exploits
         self.picked_up_soups = set()
         self.delivered_soups = set()
+        # Pot tracking to prevent repeated inference credits
+        self._credited_ready_pots = set()
 
     def update_weights(self, new_weights, episode):
         """Update shaping weights and episode count for annealing."""
@@ -54,6 +56,8 @@ class RewardShaper:
         self.picked_up_soups = set()
         self.delivered_soups = set()
         self.soups_delivered_this_episode = 0
+        # Reset pot tracking to prevent repeated inference credits
+        self._credited_ready_pots.clear()
         for k in self.event_counts:
             self.event_counts[k] = 0
 
@@ -90,11 +94,15 @@ class RewardShaper:
         pot_events = self._diff_pots_dict(self.prev_pots, curr_pots)
         delivery_occurred = self._correct_delivery_event(state, sparse_rewards)
 
-        # Validation: catch suspicious onion counts
-        if pot_events["onion_added"] > 10:
-            print(f"[WARNING] Suspicious onion count: {pot_events['onion_added']} in single timestep!")
-            print(f"prev_pots: {self.prev_pots}")
-            print(f"curr_pots: {curr_pots}")
+        # Safety validation: cap onion counts to prevent any remaining exploits
+        if pot_events["onion_added"] > 20:
+            print(f"[ERROR] Onion inference bug detected: {pot_events['onion_added']} onions in single timestep!")
+            print(f"  prev_pots: {self.prev_pots}")
+            print(f"  curr_pots: {curr_pots}")
+            print(f"  Capping to 3 onions (max per pot)")
+            pot_events["onion_added"] = min(pot_events["onion_added"], 3)
+        elif pot_events["onion_added"] > 10:
+            print(f"[WARNING] High onion count: {pot_events['onion_added']} in single timestep")
 
         # Track actual event magnitudes (not per-timestep occurrences)
         self.event_counts["onion_in_pot"] += pot_events["onion_added"]
@@ -190,7 +198,7 @@ class RewardShaper:
         
         for pos in curr.keys():
             if pos not in prev:
-                # New pot appeared with items already in it
+                # New pot appeared with items already in it - credit ONCE
                 if curr[pos]["num_items"] > 0:
                     events["onion_added"] += curr[pos]["num_items"]
                     if DEBUG_POT_EVENTS:
@@ -209,22 +217,33 @@ class RewardShaper:
                     f"[POT_DEBUG] {pos}: items {p['num_items']}→{c['num_items']}, cooking {p['is_cooking']}→{c['is_cooking']}, ready {p['is_ready']}→{c['is_ready']}"
                 )
 
-            # Check if soup became ready (special case for missing onions)
+            # Check if soup became ready - credit ONCE per pot using tracking set
             if not p["is_ready"] and c["is_ready"]:
-                events["soup_ready"] += 1
-                if DEBUG_POT_EVENTS:
-                    print(f"[POT_DEBUG] ✓ soup_ready at {pos}")
+                pot_id = pos  # Use position as unique pot identifier
                 
-                # Consumption case: infer missing onions to reach total of 3
-                # This handles 2→0+ready where the 3rd onion addition was missed
-                total_onions_needed = 3
-                onions_to_infer = total_onions_needed - p["num_items"]
-                if onions_to_infer > 0:
-                    events["onion_added"] += onions_to_infer
+                # Only credit if we haven't already credited this pot for becoming ready
+                if pot_id not in self._credited_ready_pots:
+                    events["soup_ready"] += 1
+                    self._credited_ready_pots.add(pot_id)
+                    
                     if DEBUG_POT_EVENTS:
-                        print(f"[POT_DEBUG] ✓ onion_added {onions_to_infer} (inferred to reach 3 total) at {pos}")
-            else:
-                # Normal case: track incremental additions when soup not becoming ready
+                        print(f"[POT_DEBUG] ✓ soup_ready at {pos} (first time)")
+                    
+                    # Infer missing onions to reach 3 total (handles consumption case)
+                    total_onions_needed = 3
+                    onions_to_infer = total_onions_needed - p["num_items"]
+                    if onions_to_infer > 0:
+                        events["onion_added"] += onions_to_infer
+                        if DEBUG_POT_EVENTS:
+                            print(f"[POT_DEBUG] ✓ onion_added {onions_to_infer} (inferred to reach 3 total) at {pos}")
+                elif DEBUG_POT_EVENTS:
+                    print(f"[POT_DEBUG] ⚠ soup_ready at {pos} already credited, skipping")
+                
+                # Skip normal onion tracking when soup becomes ready
+                continue
+            
+            # Normal case: track incremental additions when soup not becoming ready
+            if not c["is_ready"]:  # Only count additions if soup hasn't finished
                 items_added = c["num_items"] - p["num_items"]
                 if items_added > 0:
                     events["onion_added"] += items_added
@@ -236,6 +255,12 @@ class RewardShaper:
                 events["cooking_started"] += 1
                 if DEBUG_POT_EVENTS:
                     print(f"[POT_DEBUG] ✓ cooking_started at {pos}")
+        
+        # Clear tracking for pots that were picked up (no longer in curr_pots)
+        pots_to_clear = self._credited_ready_pots - set(curr.keys())
+        if pots_to_clear and DEBUG_POT_EVENTS:
+            print(f"[POT_DEBUG] Clearing credited pots: {pots_to_clear}")
+        self._credited_ready_pots -= pots_to_clear
         
         return events
 
