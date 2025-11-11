@@ -194,11 +194,15 @@ class RewardShaper:
         return pots
 
     def _diff_pots_dict(self, prev, curr):
+        """
+        Detect pot state changes using direct state transitions ONLY.
+        NO inference - only credit exact +1 transitions per official Overcooked-AI style.
+        """
         events = {"onion_added": 0, "cooking_started": 0, "soup_ready": 0}
         
         for pos in curr.keys():
             if pos not in prev:
-                # New pot appeared with items already in it - credit ONCE
+                # New pot appeared - credit items it starts with
                 if curr[pos]["num_items"] > 0:
                     events["onion_added"] += curr[pos]["num_items"]
                     if DEBUG_POT_EVENTS:
@@ -217,38 +221,26 @@ class RewardShaper:
                     f"[POT_DEBUG] {pos}: items {p['num_items']}→{c['num_items']}, cooking {p['is_cooking']}→{c['is_cooking']}, ready {p['is_ready']}→{c['is_ready']}"
                 )
 
-            # Check if soup became ready - credit ONCE per pot using tracking set
+            # CRITICAL: Only credit DIRECT num_items increases (no inference!)
+            # This prevents double-counting when soup becomes ready
+            items_added = c["num_items"] - p["num_items"]
+            if items_added > 0:
+                events["onion_added"] += items_added
+                if DEBUG_POT_EVENTS:
+                    print(f"[POT_DEBUG] ✓ onion_added {items_added} at {pos} (direct transition)")
+            
+            # Soup became ready - credit ONCE per pot using tracking set
             if not p["is_ready"] and c["is_ready"]:
-                pot_id = pos  # Use position as unique pot identifier
+                pot_id = pos
                 
-                # Only credit if we haven't already credited this pot for becoming ready
                 if pot_id not in self._credited_ready_pots:
                     events["soup_ready"] += 1
                     self._credited_ready_pots.add(pot_id)
                     
                     if DEBUG_POT_EVENTS:
                         print(f"[POT_DEBUG] ✓ soup_ready at {pos} (first time)")
-                    
-                    # Infer missing onions to reach 3 total (handles consumption case)
-                    total_onions_needed = 3
-                    onions_to_infer = total_onions_needed - p["num_items"]
-                    if onions_to_infer > 0:
-                        events["onion_added"] += onions_to_infer
-                        if DEBUG_POT_EVENTS:
-                            print(f"[POT_DEBUG] ✓ onion_added {onions_to_infer} (inferred to reach 3 total) at {pos}")
                 elif DEBUG_POT_EVENTS:
                     print(f"[POT_DEBUG] ⚠ soup_ready at {pos} already credited, skipping")
-                
-                # Skip normal onion tracking when soup becomes ready
-                continue
-            
-            # Normal case: track incremental additions when soup not becoming ready
-            if not c["is_ready"]:  # Only count additions if soup hasn't finished
-                items_added = c["num_items"] - p["num_items"]
-                if items_added > 0:
-                    events["onion_added"] += items_added
-                    if DEBUG_POT_EVENTS:
-                        print(f"[POT_DEBUG] ✓ onion_added {items_added} at {pos}")
             
             # Cooking started
             if not p["is_cooking"] and c["is_cooking"]:
@@ -275,19 +267,19 @@ class RewardShaper:
         return pos
 
     def _correct_delivery_event(self, state, sparse_rewards):
-        """Bootstrap gating: position-based until ep 10k, then strict sparse reward gate."""
+        """Bootstrap gating: position-based until ep 5k, then strict sparse +20 gate."""
         base = self._coerce_rewards(sparse_rewards)
         total_sparse = sum(base)
 
-        # Cap deliveries per episode
-        if self.soups_delivered_this_episode >= 10:
-            print(f"[DELIVERY_DEBUG] ✗ Delivery cap (10) reached this episode")
+        # Safety cap deliveries per episode (raised to 20 to avoid blocking legitimate learning)
+        if self.soups_delivered_this_episode >= 20:
+            print(f"[DELIVERY_DEBUG] ✗ Delivery cap (20) reached this episode")
             return 0
 
         serving = self._serving_positions()
 
-        # Bootstrap phase (first 10k episodes): accept position-based
-        if self.episode_count < 10000:
+        # Bootstrap phase (first 5k episodes): accept position-based for early exploration
+        if self.episode_count < 5000:
             for aid in range(2):
                 p, pp = state.players[aid], self.prev_state.players[aid]
                 prev_held = (
@@ -312,8 +304,8 @@ class RewardShaper:
                         return 1
             return 0
 
-        # Strict phase (after 10k): require sparse reward
-        if total_sparse < 15.0:
+        # Strict phase (after 5k): require sparse +20 reward ONLY
+        if total_sparse < 19.0:
             return 0
 
         for aid in range(2):

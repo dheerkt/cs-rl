@@ -53,8 +53,8 @@ class HyperParams:
     shape_soup_pickup = 0.35
     shape_correct_delivery = 0.50
     shape_penalty_drop = 0.10  # Reduced back to 0.10 - pot exploit fixed, need exploration room
-    shape_anneal_start = 0.7
-    shape_anneal_end = 0.9
+    shape_anneal_start = 0.4  # Aggressive: start fade at 40% (was 70%)
+    shape_anneal_end = 0.7    # Near-zero by 70% (was 90%)
 
     # Logging
     log_interval = 100
@@ -69,15 +69,21 @@ class HyperParams:
 
     @classmethod
     def get_shaped_reward_weights(cls, progress=0.0):
+        """
+        Aggressive annealing schedule per MAPPO reference:
+        - 0-40%: Full shaping (scale=1.0) for bootstrap learning
+        - 40-70%: Aggressive fade (1.0 → 0.01) to force sparse optimization
+        - 70-100%: Near-zero (scale=0.01) to rely on sparse +20 only
+        """
         if progress < cls.shape_anneal_start:
             scale = 1.0
         elif progress > cls.shape_anneal_end:
-            scale = 0.1
+            scale = 0.01  # Near-zero (was 0.1, now 0.01 for strict sparse learning)
         else:
             anneal_progress = (progress - cls.shape_anneal_start) / (
                 cls.shape_anneal_end - cls.shape_anneal_start
             )
-            scale = 1.0 - 0.9 * anneal_progress
+            scale = 1.0 - 0.99 * anneal_progress  # Aggressive fade (was 0.9, now 0.99)
 
         return {
             "onion_in_pot": cls.shape_onion_in_pot * scale,
