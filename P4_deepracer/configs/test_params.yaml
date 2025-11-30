@@ -1,0 +1,25 @@
+---
+# Minimal configuration for pipeline testing
+seed:               42
+cpu_only:           false
+environment:        deepracer-v0
+experiment_name:    pipeline_test
+
+# Minimal values for quick validation (1 update cycle)
+total_timesteps:    128            # Just enough for 2 updates
+learning_rate:      0.0003
+num_envs:           1              # Single environment
+num_steps:          64             # Small rollout
+batch_size:         32             # Small batches
+num_epochs:         2              # Few epochs
+
+# Standard PPO parameters
+gamma:              0.99
+gae_lambda:         0.95
+clip_eps:           0.2
+vf_coef:            0.5
+ent_coef:           0.01
+max_grad_norm:      0.5
+
+# Save immediately for testing
+save_interval:      1

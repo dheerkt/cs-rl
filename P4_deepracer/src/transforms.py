@@ -64,19 +64,27 @@ class CNN(nn.Module):
 
 class PreprocessLiDAR(nn.Module):
     '''
-    boiler-plate pre-processor for camera observations
-    TODO: modify this class as required in case you want to pre-process LiDAR observations.
+    Pre-processor for LiDAR observations.
+    Handles inf values (no obstacles) and normalizes to [0, 1] range.
     '''
     def forward(self, x):
+        # Clip inf values to LIDAR_RANGE_MAX
+        x = torch.clamp(x, min=LIDAR_RANGE_MIN, max=LIDAR_RANGE_MAX)
+        
+        # Normalize to [0, 1] range
+        x = (x - LIDAR_RANGE_MIN) / (LIDAR_RANGE_MAX - LIDAR_RANGE_MIN)
+        
         return x
 
 
 class PreprocessCamera(nn.Module):
     '''
-    boiler-plate pre-processor for camera observations
-    TODO: modify this class as required in case you want to pre-process camera observations.
+    Pre-processor for camera observations.
+    Normalizes pixel values from [0, 255] to [0, 1] range.
     '''
     def forward(self, x):
+        # Normalize to [0, 1] range
+        x = x / CAMERA_MAX_MEASUREMENT
         return x
 
 

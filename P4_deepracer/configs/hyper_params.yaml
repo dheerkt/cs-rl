@@ -1,10 +1,25 @@
 ---
-# default hyper-parameters for your experiments.
-# these are just dummy variables as an example.
+# PPO hyperparameters for DeepRacer training
 seed:               42
 cpu_only:           false
 environment:        deepracer-v0
-experiment_name:    time_trial
-learning_rate:      2e-2
-total_timesteps:    1024
-gamma:              0.99
+experiment_name:    time_trial_ppo
+
+# Training parameters
+total_timesteps:    1000000        # Total env steps (adjust based on training time)
+learning_rate:      0.0003         # Adam learning rate
+num_envs:           1              # Number of parallel environments (DeepRacer is single-env)
+num_steps:          2048           # Steps per rollout
+batch_size:         64             # Minibatch size for PPO updates
+num_epochs:         10             # PPO update epochs per rollout
+
+# PPO parameters
+gamma:              0.99           # Discount factor
+gae_lambda:         0.95           # GAE lambda parameter
+clip_eps:           0.2            # PPO clipping epsilon
+vf_coef:            0.5            # Value function loss coefficient
+ent_coef:           0.01           # Entropy bonus coefficient
+max_grad_norm:      0.5            # Gradient clipping threshold
+
+# Logging and saving
+save_interval:      50             # Save checkpoint every N updates
