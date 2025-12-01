@@ -42,3 +42,11 @@ observation, reward, terminated, truncated, info = env.step(
 )
 ```
 See the [packages directory](https://github.gatech.edu/rldm/P4_deepracer/tree/main/packages) and the [`usage.ipynb`](https://github.gatech.edu/rldm/P4_deepracer/tree/main/usage.ipynb) notebook for details.
+
+## Demo Videos
+
+The following walkthrough videos were captured with the final Vegas-trained policy via `src.utils.demo`:
+
+- [Time-Trial (reInvent2019_wide)](demos/demo_timetrial.mp4)
+- [Obstacle Avoidance (reInvent2019_wide, 6 obstacles)](demos/demo_obstacle.mp4)
+- [Head-to-Bot (reInvent2019_wide, 3 bot cars)](demos/demo_headtobot.mp4)
