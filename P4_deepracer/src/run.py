@@ -4,9 +4,11 @@ import torch
 import torch.nn as nn
 import datetime
 import numpy as np
+from pathlib import Path
 from loguru import logger
 from munch import munchify
 from torch.utils.tensorboard import SummaryWriter
+from gymnasium.vector import AsyncVectorEnv
 
 from src.agents import MyFancyAgent, RandomAgent
 from src.buffer import RolloutBuffer
@@ -18,7 +20,11 @@ from src.utils import (
 
 
 DEVICE = device()
-HYPER_PARAMS_PATH: str='configs/hyper_params.yaml'
+ROOT_DIR = Path(__file__).resolve().parent.parent
+HYPER_PARAMS_PATH = ROOT_DIR / 'configs' / 'hyper_params.yaml'
+RUNS_DIR = ROOT_DIR / 'runs'
+CHECKPOINTS_DIR = ROOT_DIR / 'checkpoints'
+MODELS_DIR = ROOT_DIR / 'models'
 
 
 def tensor(x: np.array, type=torch.float, device=DEVICE) -> torch.Tensor:
@@ -29,22 +35,49 @@ def zeros(x: tuple, type=torch.float, device=DEVICE) -> torch.Tensor:
     return torch.zeros(x, dtype=type, device=device)
 
 
+def _to_scalar(value) -> float:
+    if isinstance(value, torch.Tensor):
+        value = value.detach().cpu()
+        if value.numel() == 0:
+            raise ValueError("Tensor has no elements to convert to scalar.")
+        return value.view(-1)[0].item()
+    if isinstance(value, np.ndarray):
+        if value.size == 0:
+            raise ValueError("Array has no elements to convert to scalar.")
+        return float(value.reshape(-1)[0])
+    if isinstance(value, (list, tuple)):
+        if len(value) == 0:
+            raise ValueError("Sequence has no elements to convert to scalar.")
+        return float(value[0])
+    if hasattr(value, 'item'):
+        try:
+            return float(value.item())
+        except Exception:
+            pass
+    return float(value)
+
+
 def run(hparams):
     start_time = time.time()
     
     # Load hyper-params
-    with open(HYPER_PARAMS_PATH, 'r') as file:
+    with HYPER_PARAMS_PATH.open('r') as file:
         default_hparams = yaml.safe_load(file)
     
     final_hparams = default_hparams.copy()
     final_hparams.update(hparams)
     args = munchify(final_hparams)
     
+    # Ensure output directories exist
+    RUNS_DIR.mkdir(parents=True, exist_ok=True)
+    CHECKPOINTS_DIR.mkdir(parents=True, exist_ok=True)
+    MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    
     # Setup logging
     run_name = (
         f"{args.environment}__{args.experiment_name}__{args.seed}__{int(time.time())}"
     )
-    writer = SummaryWriter(f"runs/{run_name}")
+    writer = SummaryWriter(str(RUNS_DIR / run_name))
     writer.add_text(
         'hyperparameters',
         "|param|value|\n|-|-|\n%s" % (
@@ -57,16 +90,58 @@ def run(hparams):
     set_seed(args.seed)
     
     # Setup environment and agent
-    env = make_environment(args.environment)
+    host = getattr(args, 'host', '127.0.0.1')
+    base_port = getattr(args, 'base_port', 8888)
     
-    # Get observation and action space dimensions
-    obs_space = env.observation_space
-    action_space = env.action_space
+    if args.num_envs == 1:
+        env = make_environment(args.environment, seed=args.seed, host=host, port=base_port)
+        obs_space = env.observation_space
+        action_space = env.action_space
+    else:
+        def _make_env(index):
+            port = base_port + index
+            seed_offset = args.seed + index
+
+            def _init():
+                return make_environment(
+                    args.environment,
+                    seed=seed_offset,
+                    host=host,
+                    port=port
+                )
+            return _init
+        
+        env_fns = [_make_env(i) for i in range(args.num_envs)]
+        env = AsyncVectorEnv(env_fns)
+        obs_space = env.single_observation_space
+        action_space = env.single_action_space
+    
     obs_dim = np.prod(obs_space.shape)
     
     # Initialize agent
     agent = MyFancyAgent(obs_space, action_space, name=args.experiment_name).to(DEVICE)
+
+    pretrained_model = getattr(args, 'pretrained_model', None)
+    optimizer_state = None
+    if pretrained_model:
+        checkpoint_path = Path(pretrained_model)
+        if not checkpoint_path.is_absolute():
+            checkpoint_path = ROOT_DIR / checkpoint_path
+        if not checkpoint_path.exists():
+            raise FileNotFoundError(
+                f"Pretrained model not found at {checkpoint_path}"
+            )
+        state = torch.load(checkpoint_path, map_location=DEVICE)
+        if isinstance(state, dict) and 'agent_state_dict' in state:
+            optimizer_state = state.get('optimizer_state_dict')
+            state = state['agent_state_dict']
+        agent.load_state_dict(state)
+        logger.info(f"Loaded pretrained weights from {checkpoint_path}")
+
     optimizer = torch.optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
+    if optimizer_state is not None:
+        optimizer.load_state_dict(optimizer_state)
+        logger.info("Loaded optimizer state from checkpoint")
     
     # Initialize rollout buffer
     buffer = RolloutBuffer(
@@ -80,7 +155,7 @@ def run(hparams):
     global_step = 0
     num_updates = args.total_timesteps // (args.num_steps * args.num_envs)
     
-    obs, info = env.reset()
+    obs, info = env.reset(seed=args.seed)
     obs = tensor(obs).unsqueeze(0) if args.num_envs == 1 else tensor(obs)  # [num_envs, obs_dim]
     
     logger.info(f"Starting PPO training for {num_updates} updates ({args.total_timesteps} total steps)")
@@ -104,23 +179,55 @@ def run(hparams):
                 
                 # Log episode statistics before reset
                 if done and isinstance(info, dict) and 'episode' in info:
-                    writer.add_scalar('rollout/episodic_return', info['episode']['r'], global_step)
-                    writer.add_scalar('rollout/episodic_length', info['episode']['l'], global_step)
+                    ep_return = _to_scalar(info['episode']['r'])
+                    ep_length = _to_scalar(info['episode']['l'])
+                    writer.add_scalar('rollout/episodic_return', ep_return, global_step)
+                    writer.add_scalar('rollout/episodic_length', ep_length, global_step)
                     logger.info(
                         f"Update {update}/{num_updates}, Step {global_step}: "
-                        f"Episode Return = {info['episode']['r']:.2f}, "
-                        f"Episode Length = {info['episode']['l']}"
+                        f"Episode Return = {ep_return:.2f}, Episode Length = {ep_length}"
                     )
                     # Manual reset to avoid RecordEpisodeStatistics assertion
                     next_obs, info = env.reset()
                 
-                next_obs = tensor(next_obs)
+                next_obs = tensor(next_obs).unsqueeze(0)
             else:
                 next_obs, rewards, terminateds, truncateds, infos = env.step(actions.cpu().numpy())
                 dones = np.logical_or(terminateds, truncateds)
                 next_obs = tensor(next_obs)
-                reward = rewards
-                done = dones
+                reward = torch.as_tensor(rewards, dtype=torch.float32, device=DEVICE)
+                done = torch.as_tensor(dones, dtype=torch.bool, device=DEVICE)
+
+                info_records = []
+                if isinstance(infos, dict):
+                    final_infos = infos.get('final_info')
+                    if final_infos is not None:
+                        info_records.extend([fi for fi in final_infos if fi])
+                    episode_info = infos.get('episode')
+                    if episode_info is not None:
+                        if isinstance(episode_info, dict):
+                            info_records.append(episode_info)
+                        elif isinstance(episode_info, (list, tuple)):
+                            info_records.extend([ep for ep in episode_info if ep])
+                elif isinstance(infos, (list, tuple)):
+                    info_records.extend(infos)
+
+                for info_item in info_records:
+                    ep_info = None
+                    if isinstance(info_item, dict) and 'episode' in info_item:
+                        ep_info = info_item['episode']
+                    elif isinstance(info_item, dict) and all(k in info_item for k in ('r', 'l')):
+                        ep_info = info_item
+
+                    if ep_info is not None:
+                        ep_return = _to_scalar(ep_info['r'])
+                        ep_length = _to_scalar(ep_info['l'])
+                        writer.add_scalar('rollout/episodic_return', ep_return, global_step)
+                        writer.add_scalar('rollout/episodic_length', ep_length, global_step)
+                        logger.info(
+                            f"Update {update}/{num_updates}, Step {global_step}: "
+                            f"Episode Return = {ep_return:.2f}, Episode Length = {ep_length}"
+                        )
             
             # Store transition
             buffer.add(obs, actions, log_probs, reward, done, values)
@@ -222,7 +329,7 @@ def run(hparams):
         
         # Save checkpoint periodically
         if update % args.save_interval == 0:
-            checkpoint_path = f"checkpoints/{run_name}_update_{update}.pt"
+            checkpoint_path = CHECKPOINTS_DIR / f"{run_name}_update_{update}.pt"
             torch.save({
                 'update': update,
                 'global_step': global_step,
@@ -232,7 +339,7 @@ def run(hparams):
             logger.info(f"Checkpoint saved: {checkpoint_path}")
     
     # Final save
-    final_path = f"models/{run_name}_final.pt"
+    final_path = MODELS_DIR / f"{run_name}_final.pt"
     torch.save(agent.state_dict(), final_path)
     logger.info(f"Training complete. Final model saved: {final_path}")
     

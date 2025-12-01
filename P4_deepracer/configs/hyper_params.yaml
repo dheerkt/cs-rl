@@ -4,12 +4,15 @@ seed:               42
 cpu_only:           false
 environment:        deepracer-v0
 experiment_name:    time_trial_ppo
+host:               127.0.0.1      # Simulator host
+base_port:          8888           # Starting port for simulator containers
 
 # Training parameters
-total_timesteps:    1000000        # Total env steps (adjust based on training time)
-learning_rate:      0.0003         # Adam learning rate
-num_envs:           1              # Number of parallel environments (DeepRacer is single-env)
-num_steps:          2048           # Steps per rollout
+pretrained_model:   "models/deepracer-v0__time_trial_ppo__42__1764539978_final.pt"
+total_timesteps:    500000         # Vegas fine-tune (hardest track)
+learning_rate:      0.00003        # Gentle updates to avoid forgetting
+num_envs:           16             # Number of parallel environments (match container count)
+num_steps:          128            # Steps per env (16*128=2048 total per update)
 batch_size:         64             # Minibatch size for PPO updates
 num_epochs:         10             # PPO update epochs per rollout
 

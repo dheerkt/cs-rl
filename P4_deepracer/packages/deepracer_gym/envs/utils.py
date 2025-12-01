@@ -1,6 +1,8 @@
 import json
 import hashlib
 import platform
+from pathlib import Path
+from typing import Union
 import numpy as np
 from loguru import logger
 from gymnasium import spaces
@@ -24,7 +26,8 @@ SENSOR_SPACE: dict[str, spaces.Box]={
     'SECTOR_LIDAR': None,
     'LEFT_CAMERA': None
 }
-AGENT_PARAMS_PATH: str='configs/agent_params.json'
+ROOT_DIR = Path(__file__).resolve().parents[3]
+AGENT_PARAMS_PATH = ROOT_DIR / 'configs' / 'agent_params.json'
 
 
 def validate_action_space_config(config: dict, action_space_type: str):
@@ -96,7 +99,7 @@ def action_space_type(config: dict):
     return space_type
 
 
-def make_action_space(config_path: str=AGENT_PARAMS_PATH):
+def make_action_space(config_path: Union[str, Path]=AGENT_PARAMS_PATH):
     with open(config_path, 'r') as file:
         config = json.load(file)
     
@@ -130,7 +133,7 @@ def make_action_space(config_path: str=AGENT_PARAMS_PATH):
     return action_space, config['action_space']
 
 
-def make_observation_space(config_path: str=AGENT_PARAMS_PATH):
+def make_observation_space(config_path: Union[str, Path]=AGENT_PARAMS_PATH):
     with open(config_path, 'r') as file:
         config = json.load(file)
     sensors: list[str]=config['sensor']

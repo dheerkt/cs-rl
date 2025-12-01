@@ -5,6 +5,7 @@ with minimal compute (1-2 update cycles).
 """
 
 import sys
+from pathlib import Path
 import yaml
 from src.run import run
 
@@ -23,8 +24,11 @@ if __name__ == "__main__":
     print("=" * 60)
     print()
     
+    root_dir = Path(__file__).resolve().parent
+    config_path = root_dir / 'configs' / 'test_params.yaml'
+    
     # Load test configuration
-    with open('configs/test_params.yaml', 'r') as f:
+    with config_path.open('r') as f:
         test_config = yaml.safe_load(f)
     
     print("Test Configuration:")

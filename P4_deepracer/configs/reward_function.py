@@ -1,25 +1,35 @@
+import math
+
+# Tunable coefficients for clarity
+CENTERLINE_SHARPNESS = 8.0  # higher -> stricter center following
+STEERING_THRESHOLD_DEGREES = 15.0
+STEERING_PENALTY_FACTOR = 0.5  # multiplier applied when steering beyond threshold
+MIN_REWARD = 1e-3
+
+
 def reward_function(params):
-    '''
-    Example of rewarding the agent to follow center line
-    '''
-    
-    # Read input parameters
-    track_width = params['track_width']
+    """Stateless reward encouraging fast, centered, smooth driving."""
+    speed = params['speed']
     distance_from_center = params['distance_from_center']
-    
-    # Calculate 3 markers that are at varying distances away from the center line
-    marker_1 = 0.1 * track_width
-    marker_2 = 0.25 * track_width
-    marker_3 = 0.5 * track_width
-    
-    # Give higher reward if the car is closer to center line and vice versa
-    if distance_from_center <= marker_1:
-        reward = 1.0
-    elif distance_from_center <= marker_2:
-        reward = 0.5
-    elif distance_from_center <= marker_3:
-        reward = 0.1
-    else:
-        reward = 1e-3  # likely crashed/ close to off track
-    
-    return float(reward)
+    track_width = params['track_width']
+    all_wheels_on_track = params['all_wheels_on_track']
+    steering_angle = abs(params['steering_angle'])
+
+    # Hard gate: minimal reward if any wheel leaves the track
+    if not all_wheels_on_track:
+        return MIN_REWARD
+
+    # Base reward is proportional to speed (proxy for progress rate)
+    reward = max(speed, MIN_REWARD)
+
+    # Exponential centerline factor with smooth gradients
+    normalized_distance = distance_from_center / track_width
+    centerline_factor = math.exp(-CENTERLINE_SHARPNESS * normalized_distance ** 2)
+
+    # Steering smoothness encourages efficient racing lines
+    steering_factor = 1.0
+    if steering_angle > STEERING_THRESHOLD_DEGREES:
+        steering_factor = STEERING_PENALTY_FACTOR
+
+    reward *= centerline_factor * steering_factor
+    return float(max(reward, MIN_REWARD))

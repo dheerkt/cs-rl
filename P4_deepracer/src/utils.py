@@ -13,7 +13,10 @@ import gymnasium as gym
 from loguru import logger
 from gymnasium import spaces
 import matplotlib.pyplot as plt
+import time
+from typing import Optional
 from gymnasium.wrappers import (
+
     RecordVideo,
     FlattenObservation,
     RecordEpisodeStatistics
@@ -248,8 +251,12 @@ def evaluate_track(
         agent: Agent,
         world_name: str,
         environment_name: str=ENVIRONMENT_NAME,
-        directory: str='./evaluations'               # directory to save eval data
+        directory: str='./evaluations',               # directory to save eval data
+        manage_simulator: bool=True,
+        wait_after_restart: float=5.0,
+        episodes: Optional[int] = None
     ):
+
     race_type = get_race_type(
         environment_params_path=ENVIRONMENT_PARAMS_PATH
     )
@@ -258,13 +265,15 @@ def evaluate_track(
         f'Starting {race_type} evaluation on {world_name} track.'
     )
 
-    # restart the simulation in evaluation mode
-    run_command([
-        '/bin/bash',
-        './scripts/restart_deepracer.sh',
-        '-E', 'true',           # evaluation mode
-        '-W', world_name,       # specify WORLD_NAME
-    ])
+    if manage_simulator:
+        run_command([
+            '/bin/bash',
+            './scripts/restart_deepracer.sh',
+            '-E', 'true',           # evaluation mode
+            '-W', world_name,       # specify WORLD_NAME
+        ])
+        if wait_after_restart > 0:
+            time.sleep(wait_after_restart)
 
     eval_device = torch.device('cpu')
     agent.eval().to(eval_device)
@@ -272,7 +281,7 @@ def evaluate_track(
 
     # create environment with proper render_mode
     eval_environment = make_environment(
-        ENVIRONMENT_NAME
+        environment_name
     )
     observation, _ = eval_environment.reset()
 
@@ -280,10 +289,11 @@ def evaluate_track(
         'progress': [],
         'lap_time': [],
     }
+    total_episodes = episodes or EVAL_EPISODES
     evaluation_progress = PROGRESS_MANAGER.counter(
-        total=EVAL_EPISODES, desc=f'Evaluating {world_name}', unit='episodes'
+        total=total_episodes, desc=f'Evaluating {world_name}', unit='episodes'
     )
-    for episode in range(EVAL_EPISODES):
+    for episode in range(total_episodes):
         
         episode_progress = PROGRESS_MANAGER.counter(
             total=MAX_EVAL_STEPS, desc=f'Episode {episode}', unit='steps', leave=False
@@ -350,8 +360,12 @@ def evaluate_track(
 def evaluate(
         agent: Agent,
         environment_name: str=ENVIRONMENT_NAME,
-        directory: str='./evaluations'               # directory to save eval data
+        directory: str='./evaluations',               # directory to save eval data
+        manage_simulator: bool=True,
+        wait_after_restart: float=5.0,
+        episodes: Optional[int] = None
     ):
+
     race_type = get_race_type(
         environment_params_path=ENVIRONMENT_PARAMS_PATH
     )
@@ -380,18 +394,21 @@ def evaluate(
             agent=agent,
             world_name=world_name,
             environment_name=environment_name,
-            directory=directory
+            directory=directory,
+            manage_simulator=manage_simulator,
+            wait_after_restart=wait_after_restart,
+            episodes=episodes
         )
     status.close()
     
     with open(f'{directory}/{race_type}-{agent.name}.json', '+w') as f:
         json.dump(eval_metrics, f)
     
-    # restart the simulation with specified parameters
-    run_command([
-        '/bin/bash',
-        './scripts/restart_deepracer.sh'
-    ])
+    if manage_simulator:
+        run_command([
+            '/bin/bash',
+            './scripts/restart_deepracer.sh'
+        ])
 
     return eval_metrics
 

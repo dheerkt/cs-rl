@@ -4,12 +4,14 @@ seed:               42
 cpu_only:           false
 environment:        deepracer-v0
 experiment_name:    pipeline_test
+host:               127.0.0.1
+base_port:          8888
 
-# Minimal values for quick validation (1 update cycle)
-total_timesteps:    128            # Just enough for 2 updates
+# Minimal values for quick validation (vectorized)
+total_timesteps:    2048           # 2 updates with 16 envs * 64 steps
 learning_rate:      0.0003
-num_envs:           1              # Single environment
-num_steps:          64             # Small rollout
+num_envs:           16             # Vectorized environment count
+num_steps:          64             # Steps per environment per rollout
 batch_size:         32             # Small batches
 num_epochs:         2              # Few epochs
 
