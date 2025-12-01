@@ -35,12 +35,6 @@ ENV/
 *.pth
 *.onnx
 
-# Logs and results (keep structure, ignore contents)
-results/logs/*.json
-results/models/*.pt
-results/graphs/*.png
-results/evaluation/*.json
-
 # Keep directory structure
 !results/logs/.gitkeep
 !results/models/.gitkeep
