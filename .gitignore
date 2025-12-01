@@ -31,9 +31,12 @@ ENV/
 *.ipynb_checkpoints/
 
 # PyTorch
-*.pt
-*.pth
 *.onnx
+
+runs/
+checkpoints/
+*.log
+*.pid
 
 # Keep directory structure
 !results/logs/.gitkeep
